@@ -174,3 +174,104 @@ PostgreSql会build一个bitmap,每一个bit对应一个record，每个index求�
 从根节点开始进行求值，不断向下到叶节点，然后将值往上传。
 
 如果某个子节点的值总是为常量，则可以进行查询优化（查询重写，将其重写成某个常量）。
+
+
+## Parallel vs Distributed
+
+![F13](./F13.png)
+
+## Process Model
+
+处理模型是如何组织系统来通过多个workers来处理并发请求的方式。
+
+### Process per DBMS Worker
+
+最基础的方案，我们把单个OS进程作为worker使用。
+
+![F14](./F14.png)
+
+特点：
+* 可承受性（worker崩溃不会导致系统崩溃）。
+* 通过共享（mmap）全局数据结构来节省内存。
+* 依赖OS调度。
+
+### Process Pool
+
+![F15](./F15.png)
+
+特点：
+* 仍然依赖共享内存和OS调度。
+* 对CPU Cache的局部性有害。
+
+workers的数量通常是固定的，workers都在忙系统就会过载无法处理新的请求，但通常允许管理员分配到一个独占的worker来做一些清理工作。
+
+一个DBMS通常只有一个process pool。
+
+### Thread per DBMS Worker
+
+![F16](./F16.png)
+
+特点：
+* DBMS管理调度。
+* 可能有也可能没有dispatcher线程。
+* thread crash导致系统崩溃。
+* 更低的上下文切换开销。
+* 不需要共享内存。
+
+workers不保证请求的不同部分被拆分到不同的worker中。
+
+### Inter Query Parallelism vs Intra Query Parallelism
+
+![F17](./F17.png)
+
+### Inter Query Parallelism
+
+* 通过同时并行执行多个查询提升整体性能。
+* 如果全部查询都是只读的，那么只需要少量的调度工作。
+* 如果有部分查询update了database，那么我们很难保证正确性。
+
+### Intra Query Parallelism
+
+* 通过并行执行单个查询的operators来提升单个查询的性能。
+* 从生产者/消费者范式的角度来考虑operators的组织，operators不仅是子节点数据的消费者同时也是父节点数据的生产者。
+* 每个operators都有并行算法。
+* 可以让多个workers访问集中式数据结构，也可以使用分区来划分工作。
+
+### Parallel Hash Join
+
+在分区后，使用单独的worker为R和S的每个的桶执行join。
+
+![F18](./F18.png)
+
+有三种方式实现Intra Query Parallelism：
+
+### Intra Operators Parallelism
+
+将一个完整的operators拆解成多个平行的operators，即将数据分成多个段每个段执行的函数是一样的。
+
+DBMS会在查询计划中插入一个exchange operator去收集子operators的数据。
+
+例如对某张table的scan，我们可以创建多个scan operator实例，然后每个实例负责不同的段。
+
+![F19](./F19.png)
+
+exchange operator有三种类型：
+* Gather - 将不同的workers得到的结果进行合并产生单一的输出传递给上面的operator。
+* Repartition - 将一个或多个输入根据某种属性重新拆分成多个输出将它们传递给不同的workers处理。（例如group by操作，与map reduce相似）
+* Distribute - 将单个输入拆分为多个输出交给不同的worker处理。
+
+![F20](./F20.png)
+
+### Inter Operators Parallelism
+
+
+
+### Bushy
+
+它们不是互斥的，可以结合使用。
+
+
+
+## Execution Parallelism
+
+## I/O Parallelism
