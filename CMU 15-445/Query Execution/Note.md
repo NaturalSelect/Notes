@@ -1,4 +1,4 @@
-# Query Execution Part I
+# Query Execution
 
 ## Processing Model
 
