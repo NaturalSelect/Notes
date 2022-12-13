@@ -84,9 +84,25 @@ Page的头部通常存在一些元数据:
 
 slot从低地址开始增长，tuple从高地址开始增长。
 
+![F11](./F11.png)
+
 slotted page移动快速，因为只需要移动slot在array的位置即可。
 
 当page满了之后还可以尝试压缩，来回收碎片化的空间（通常在后台进行，或者在插入时发现没有空间再运行）。
+
+### 日志结构的page
+
+不在page中存储tuples，而是存储修改tuple的信息（包括创建，更新，删除）。
+
+![F12](./F12.png)
+
+顺序的append非常快，通常用在分布式系统中（例如：HDFS,S3）。
+
+但是read非常慢，因此log增长到一定长度要进行压缩（compact）。
+
+| | | |
+|-|-|-|
+|![F12](./F12.png)|⇨|![F13](./F13.png)|
 
 ## Tuple Layout
 
@@ -97,3 +113,110 @@ slotted page移动快速，因为只需要移动slot在array的位置即可。
 * Null值bitmap，用于标识tuple哪一个部分为Null。
 
 ![F10](./F10.png)
+
+## Data Representation
+
+![F14](./F14.png)
+
+Fixed-point Decimals通常需要DBMS自己实现。
+
+VARCHAR/VARBINARY/TEXT/BLOB通常有个header保存自己的长度。
+
+Float-point的执行速度很快，但是会有舍入误差，而且也不符合交换律和结合律。
+
+Fixed-point的执行速度很慢，但它是精确的。
+
+Fixed-point的典型实现（PostgreSql）：
+
+![!F15](./F15.png)
+
+![!F16](./F16.png)
+
+### Large Value
+
+Large Value指那些无法在单个page中放置的tuple。
+
+存储方法：
+* Overflow Page
+* External Value Storge
+
+### Overflow Page
+
+假设属性c非常大：
+![F17](./F17.png)
+
+如果单个overflow page不能放置，还可以使用间接的overflow page（即使用overflow page存指针）。
+
+### External Value Storage
+
+同样假设c非常大：
+![F18](./F18.png)
+
+外部存储可以是一个指针，一个路径或者某个外部设备。
+
+## System Catalogs
+
+DBMS在其内部目录中存储有关数据库的元数据（例如保存在一张特别的表中，通过这张表找查其他的表）：
+* Tables,Columns,Views,Indexs
+* Users,Permissons
+* Internal Statistics（内部统计资料）
+
+几乎所有DBMS都将数据库的System Catalogs存储在自己的内部.
+
+大部分DBMS会用STANDARD INFORMATION_SCHMES API把Catalogs暴露出来。
+
+![F19](./F19.png)
+
+## Storage Models
+
+Workloads:
+* OLTP（大量简单事务，进行涉及少量tuple查询或更新）
+* OLAP（少量复杂事务，进行涉及大量tuple查询，不会更新tuple）
+* HTAP（试图同时做上面的事情）
+
+![F20](./F20.png)
+
+### N-Array Storage Model(Row Model)
+
+将整个tuple像数组一样放在一起，适合OLTP Workload。
+
+![F21](./F21.png)
+
+查询：
+![F22](./F22.png)
+
+插入：
+![F23](./F23.png)
+
+优点：
+* 更快的插入，更新，删除。
+* 对需要整个tuple的查询有益
+
+缺点：
+* 不适合扫描large table。
+* 不适合只需tuple的部分属性的查询。
+
+### Decomposition Storage Model(Column Model)
+
+将tuple的各个属性分开存储，适合OLAP Workload。
+
+![F24](./F24.png)
+
+查询：
+![F25](./F25.png)
+
+识别tuple：
+* Fixed-length Offsets（每个colmns下的值都是定长的，这样就可以通过offset识别tuple）
+* Embedded Tuple Ids（每个colmns内嵌一个tuple id）
+
+|Fixed-length Offsets|Embedded Tuple Ids|
+|-|-|
+|![F26](./F26.png)|![F27](./F27.png)|
+
+优点：
+* 减少I/O浪费。
+* 对查询处理和数据压缩有益。
+
+缺点：
+* 点查（point queries）很慢。
+* 插入，更新，删除很慢，因为拆分了tuple。
