@@ -220,7 +220,7 @@ workers的数量通常是固定的，workers都在忙系统就会过载无法处
 
 workers不保证请求的不同部分被拆分到不同的worker中。
 
-### Inter Query Parallelism vs Intra Query Parallelism
+## Compute Parallelism
 
 ![F17](./F17.png)
 
@@ -279,8 +279,6 @@ inter operators papallelism的扩展版本。
 |![F23](./F23.png)|⇨|![F22](./F22.png)
 
 它们不是互斥的，可以结合使用。
-
-## Execution Parallelism
 
 ## I/O Parallelism
 
