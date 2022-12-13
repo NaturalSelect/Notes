@@ -264,14 +264,75 @@ exchange operator有三种类型：
 
 ### Inter Operators Parallelism
 
+不同workers在同一时间执行不同的operators，又叫pipelined parallelism。
 
+![F21](./F21.png)
 
 ### Bushy
 
+inter operators papallelism的扩展版本。
+
+让多个workers在同一时刻对查询计划的不同部分进行操作。
+
+| | | |
+|-|-|-|
+|![F23](./F23.png)|⇨|![F22](./F22.png)
+
 它们不是互斥的，可以结合使用。
-
-
 
 ## Execution Parallelism
 
 ## I/O Parallelism
+
+
+对DBMS的文件和数据进行拆分，分散到存储设备的不同位置上。
+
+方法：
+* Multiple Disks per Database（一个数据库分散到多个磁盘）。
+* One Database per Disk。
+* One Relation per Disk。
+* Split Relation across Multiple Disks（将一个关系拆分到多个磁盘）。
+
+### Multiple Disks Parallelism 
+
+配置OS/硬件，以便跨多个存储设备存储DBMS的文件：
+* Storage Appliances
+* RAID Configuration
+
+|RAID 0|RAID 1|
+|-|-|
+|![F24](./F24.png)|![F25](./F25.png)|
+
+### Database Partitioning
+
+有些DBMS允许您指定每个单独数据库的磁盘位置,缓冲池管理器将页映射到磁盘位置。
+
+如果 DBMS 将每个数据库存储在单独的目录中，这在文件系统级别也很容易做到,但是日志文件可能是共享的。
+
+文件系统可以通过硬链接和软链接为DBMS分布文件到多个磁盘，但log必须靠DBMS手动分区。
+
+### Partition
+
+将单个逻辑表拆分成多个不相交的物理段，然后存放在不同的设备上进行管理。
+
+### Vertical Partitioning
+
+将table的不同属性存储在不同的位置上(例如，文件、磁盘卷)。必须存储tuple 元数据来重建record。
+
+
+| | | |
+|-|-|-|
+|![F26](./F26.png)|⇨|![F27](./F27.png)|
+
+### Horizontal Partitioning
+
+通过key将不同的tupe分区。
+
+方法：
+* Hash Partitioning（通过hash(key)%bucket进行分区）
+* Range Partitioning（最常用）
+* Predicate Partitioning（通过是否满足某一谓词进行分区）
+
+| | | |
+|-|-|-|
+|![F27](./F27.png)|⇨|![F29](./F29.png)|
