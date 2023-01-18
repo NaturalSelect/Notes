@@ -161,6 +161,33 @@ Node Size：
 
 ![F16](./F16.jpg)
 
+处理 Duplicate Keys:
+* Append RecrodId（添加Recrod id到 key的最后面使key变uniqued） *根据partial key lookup工作*。
+
+先将tuple插入到table heap得到recrod id。
+
+然后执行正常的插入步骤。
+
+![F30](./F30.jpg)
+
+![F31](./F31.jpg)
+
+* Overflow Leaf Node（将leaf node溢出，这样我们能确保所有相同的key在同一个node） *复杂且难以维护*。
+
+像正常插入一样执行插入过程。
+
+![F32](./F32.jpg)
+
+但是如果node空间不够，不进行split，而是使用overflow page。
+
+![F33](./F33.jpg)
+
+overflow之后可排序也可以不排（需要使用linear search）。
+
+![F34](./F34.jpg)
+
+如果overflow page也满了，继续向下添加overflow page。
+
 ## Intra-Node Search
 
 在node中的搜索方式：
@@ -227,3 +254,177 @@ Node Size：
 如果我们能确保某些page，总是留在memory中，我们就可以使用真正的pointer。
 
 ![F29](./F29.jpg)
+
+
+## Implict Indexes
+
+大多数DBMS都会为table的primary key创建一个index。
+
+![F35](./F35.jpg)
+
+因为要确保唯一性约束（否则我们每次insert都要循序扫描,同理，unique key也会自动create index。
+
+|❌| |✔|
+|-|-|-|
+|![F36](./F36.jpg)|⇨|![F37](./F37.jpg)|
+
+但foreign key不会自动创建index，但只能references有unique index的key。
+
+
+## Partial Indexs
+
+给table的子集创建index（只为某些符合条件的tuple创建index）。
+
+减少了index的size，减低了维护index的开销。
+
+例如：
+
+只在`c = 'WuTang'`的tuple set上创建index。 
+
+```sql
+CREATE INDEX idx_foo
+        ON foo(a,b)
+        WHERE c = 'WuTang'; 
+```
+下面这个查询将利用index。
+
+```sql
+SELECT b FROM foo
+WHERE a = 123 
+AND c = 'WuTang';
+```
+
+## Covering Indexes
+
+指响应查询的数据全部在index中可以找到（不需要使用record id 访问table heap，最少只需要一次I/O）。
+
+例如：
+
+在`foo(a,b)`上创建index。
+
+```sql
+CREATE INDEX idx_foo
+        ON foo(a,b)
+```
+
+对于这个查询，`idx_foo`是个Covering Index。
+
+```sql
+SELECT b FROM foo
+WHERE a = 123 
+```
+
+![F38](./F38.jpg)
+
+## Index Including Columns
+
+在index中include columns，来使index尽可能对更多从查询成为covering index。
+
+```sql
+CREATE INDEX idx_foo
+        ON foo(a,b)
+        INCLUDE (c);
+```
+
+INCLUDE 包含的columns只在leaf node中，不在inner node中。
+
+```sql
+SELECT b FROM foo
+WHERE a = 123
+AND c = 'WuTang';
+```
+
+![F39](./F39.jpg)
+
+## Function/Expression Indexes
+
+通过某个key的衍生数据创建index。
+
+运行这种查询时，一般的index就无能为力。
+
+```sql
+SELECT * FROM user
+WHERE EXTRACT(dow
+        FROM login) = 2;
+```
+
+但是可以针对`EXTRACT(dow FROM login)`创建一个expression index：
+
+```sql
+CREATE INDEX idx_user_login
+    ON user(EXTRACT(dow FROM login));
+```
+
+也可以使用partial index代替：
+
+
+```sql
+CREATE INDEX idx_user_login
+    ON user(login)
+WHERE EXTRACT(dow FROM login) = 2;
+```
+
+创建login是星期2的index。
+
+但你不能为immutable expression创建index。
+
+## Tries/Radix Tree
+
+Tries，又名Digit Search Tree、Prefix Tree（前缀树）。
+
+不在node中存储完整的key，而是key的digit。
+
+key的digit是key的一部分（子集）。
+
+tries将key分解，将digits分布在不同的层中。
+
+![F40](./F40.jpg)
+
+查询`HELLO`
+
+![F41](./F41.jpg)
+
+顺着每一次的digits往下查找。
+
+tries的形状取决于key的分布和复杂度。
+
+操作复杂度为`O(K)`其中，`K`是key的长度。
+
+Radix Tree是Tries的特化版本（compressed）。
+
+对Tries进行了垂直压缩。
+
+![F42](./F42.jpg)
+
+插入需要向下遍历找到一个empty slot，然后插入entry。
+
+![F43](./F43.jpg)
+
+这可能会改变Radix Tree的结构，把一个slot分裂成两个。
+
+删除也需要向下遍历，找到对应的slot删除entry。
+
+![F44](./F44.jpg)
+
+当整个layout只剩下最后一个slot时，进行compaction（压缩）。
+
+![F45](./F45.jpg)
+
+![F46](./F46.jpg)
+
+![F47](./F47.jpg)
+
+## Inverted Indexes
+
+当我们需要在某个table中的某个colunm（该column较大）上建立index。
+
+确认该column是否包含某个部分的时候，就应该使用Inverted Index（例如建立某篇文章的keyword index，以找出是否包含某个单词的文章）。
+
+有时也叫full-text search index(全文搜索索引)。
+
+## Other Indexs
+
+多维索引：
+* R-Tree。
+* Quad-Tree。
+* KD-Tree。
