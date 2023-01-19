@@ -193,7 +193,7 @@ read thread将无法得到write thread的latch。
 
 ## Delay Parent Updates
 
-当我们需要split时，可以采取delay的方式。
+如果我们没有inner node间反向兄弟指针（即反向指针只在同一个inner node中产生），当我们需要split时，可以采取delay的方式。
 
 ![F97](./F97.jpg)
 
@@ -214,6 +214,10 @@ read thread将无法得到write thread的latch。
 reader读取也不会发生错误，因为reader可以看到leaf node产生了overflow，并且读取它。
 
 ![F101](./F101.jpg)
+
+这可能会影响一般的read，因为现在每个read operation都需要读取下一个node，除非在当前node中已经找到了比需要找的key更大的entry。
+
+如果不能接受，可以尝试让reader也更新inner node。
 
 ## Clustered Index
 
