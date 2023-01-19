@@ -89,6 +89,30 @@ B-Tree vs B+Tree：
 
 *NOTE:部分高端系统会推迟合并，他们使用后台定时扫描批量合并，或者不平衡到一定程度时进行rebuild来代替。他们在周日关闭DBMS，然后rebuild all index来解决不平衡问题。*
 
+## Concurrency Control
+
+主要有两种思想：
+* 对data进行分区，每个分区的b+tree 只由一条thread访问（这样避免了并发控制问题） *Redis和VLOTDB使用这种方式*。
+* Lactch Crabbing/Coupling。 *几乎是所有主流数据库的选择*。
+
+如果一个node，添加或删除一个record不会造成split或merge，那么它是一个safe node。
+
+对于read thread，由于它不会添加或删除recrod，所以每一个node都是safe node。
+
+当write thread向下遍历时，对每一个node加latch。
+
+如果当前的node是safe node，那么我们在获得它的child node的latch之后解锁它，否则，我们保留这个latch直到操作结束或遇到了一个safe node。
+
+|Read|Delete|Insert|
+|-|-|-|
+|![F48](./F48.jpg)| | |
+|![F49](./F49.jpg)| | |
+|![F50](./F50.jpg)| | |
+|![F51](./F51.jpg)| | |
+|![F52](./F52.jpg)| | |
+|![F53](./F53.jpg)| | |
+|![F54](./F54.jpg)| | |
+
 ## Clustered Index
 
 DBMS的table heap是无序的，但是有时候我们想要让数据有序保存。
