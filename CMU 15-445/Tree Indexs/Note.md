@@ -93,7 +93,7 @@ B-Tree vs B+Tree：
 
 主要有两种思想：
 * 对data进行分区，每个分区的b+tree 只由一条thread访问（这样避免了并发控制问题） *Redis和VLOTDB使用这种方式*。
-* Lactch Crabbing/Coupling。 *几乎是所有主流数据库的选择*。
+* Lactch Crabbing/Coupling *几乎是所有主流数据库的选择*。
 
 如果一个node，添加或删除一个record不会造成split或merge，那么它是一个safe node。
 
@@ -103,15 +103,117 @@ B-Tree vs B+Tree：
 
 如果当前的node是safe node，那么我们在获得它的child node的latch之后解锁它，否则，我们保留这个latch直到操作结束或遇到了一个safe node。
 
-|Read|Delete|Insert|
+|Read|Delete|Insert|Split Insert|
+|-|-|-|-|
+|![F48](./F48.jpg)|![F59](./F59.jpg)|![F62](./F62.jpg)|![F69](./F69.jpg)|
+|![F49](./F49.jpg)|![F60](./F60.jpg)|![F63](./F63.jpg)|![F70](./F70.jpg)|
+|![F50](./F50.jpg)|![F55](./F55.jpg)|![F64](./F64.jpg)|![F71](./F71.jpg)|
+|![F51](./F51.jpg)|![F61](./F61.jpg)|![F65](./F65.jpg)|![F72](./F72.jpg)|
+|![F52](./F52.jpg)|![F56](./F56.jpg)|![F67](./F67.jpg)|![F73](./F73.jpg)|
+|![F53](./F53.jpg)|![F57](./F57.jpg)|![F66](./F66.jpg)|![F74](./F74.jpg)|
+|![F54](./F54.jpg)|![F58](./F58.jpg)|![F68](./F68.jpg)|![F75](./F75.jpg)|
+
+
+## Better Latch Crabbing/Coupling
+
+对Latch Crabbing/Coupling的改进。
+
+提出一种乐观假设，即假设我们向下遍历的过程中只会遇到safe node。
+
+那么我们使用read latch，而不是write latch锁定inner node。
+
+只使用write latch锁定leaf node，这种假设提高了scale。
+
+如果我们不幸遇到了unsafe node，那么我们重来一次，这一次全部加writer latch。
+
+|Fast Path|Slow Path|
+|-|-|
+|![F76](./F76.jpg)|![F82](./F82.jpg)|
+|![F77](./F77.jpg)|![F83](./F83.jpg)|
+|![F78](./F78.jpg)|![F84](./F84.jpg)|
+|![F79](./F79.jpg)|![F86](./F86.jpg)|
+|![F80](./F80.jpg)|![F85](./F85.jpg)|
+|![F81](./F81.jpg)|<p align="center"><font size=5 color="red">TRY AGAIN USING<br/>ALL WRITE LACTHES</font></p>|
+
+## Leaf Node Concurrency Control
+
+当read thread在leaf node上执行scan时。
+
+先执行正常的read latch crabbing/coupling，达到leaf node。
+
+![F87](./F87.jpg)
+
+然后再前往下一个node之前先拿到它的read latch。
+
+| | | |
 |-|-|-|
-|![F48](./F48.jpg)|![F59](./F59.jpg)|![F62](./F62.jpg)|
-|![F49](./F49.jpg)|![F60](./F60.jpg)|![F63](./F63.jpg)|
-|![F50](./F50.jpg)|![F55](./F55.jpg)|![F64](./F64.jpg)|
-|![F51](./F51.jpg)|![F61](./F61.jpg)|![F65](./F65.jpg)|
-|![F52](./F52.jpg)|![F56](./F56.jpg)|![F67](./F67.jpg)|
-|![F53](./F53.jpg)|![F57](./F57.jpg)|![F66](./F66.jpg)|
-|![F54](./F54.jpg)|![F58](./F58.jpg)|![F68](./F68.jpg)|
+|![F88](./F88.jpg)|⇨|![F89](./F89.jpg|
+
+获得read latch之后释放原来的read latch扫描下一个node。
+
+![F90](./F90.jpg)
+
+永远不会产生deadlock，因为它们只使用可共享的read latch。
+
+| | | |
+|-|-|-|
+|![F91](./F91.jpg)|⇨|![F92](./F92.jpg)|
+
+但读写混合的workload使用better latch crabbing/coupling可能产生问题。
+
+当read thread与write thread并行执行。
+
+![F93](./F93.jpg)
+
+都拿到inner node的read latch。
+
+![F94](./F94.jpg)
+
+read thread将无法得到write thread的latch。
+
+![F95](./F95.jpg)
+
+由于read thread不清楚write thread是否需要merge node（*write thread可能已经重启过，而这段时间read thread正好暂停，所以我们不能依赖inner node上的latch来识别write thread需不需要merge或split*）。
+
+![F96](./F96.jpg)
+
+因此read thread唯一能做的就是abort，然后重启操作（否则产生deadlock）。
+
+这可能导致饥饿的情况发生（read thread的请求可能一直得不到满足）。
+
+*NOTE:*
+*如果我们能保证read thread一直以从左到右的顺序read，那么我们或许能避免abort and restart。*
+
+*这需要对latch crabbing/coupling算法做一些调整：*
+* *当我们需要merge node时，我们总是去获得需要merge的node及其周边node的write latch。*
+* *获得write latch的过程按从左到右的顺序进行。*
+* *总是获得3个leaf node的write latch，除非tree不足3个node。*
+* *这可能需要获得多个同层inner node的write latch（至多锁定2个，如果不幸3个leaf node不在同一个inner node中）。*
+
+
+## Delay Parent Updates
+
+当我们需要split时，可以采取delay的方式。
+
+![F97](./F97.jpg)
+
+只需要简单的添加overflow node并把它串联起来。
+
+![F98](./F98.jpg)
+
+然后使用一张global的table来记录changes。
+
+![F99](./F99.jpg)
+
+让下一个writer去使用write latch更新parent inner node。
+
+![F100](./F100.jpg)
+
+这样我们就不需要restart。
+
+reader读取也不会发生错误，因为reader可以看到leaf node产生了overflow，并且读取它。
+
+![F101](./F101.jpg)
 
 ## Clustered Index
 
