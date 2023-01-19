@@ -215,3 +215,42 @@ Robin Hood Hashing尝试使每个key都尽可能靠近他的slot。
 ![F36](./F36.jpg)
 
 ![F37](./F37.jpg)
+
+## Concurrency Control
+
+主要有两种方式：
+* Page Latch（每个bucket加latch） *更大的粒度，适合sequential scan*。
+
+read thread在进入一个bucket之前加read latch。
+
+![F38](./F38.jpg)
+
+write thread在进入一个bucket之前加write latch。
+
+![F39](./F39.jpg)
+
+read thread执行正常的插入步骤，但在进入下一个bucket之前，释放上一个bucket的read latch，并加上下一个bucket的read latch。
+
+![F40](./F40.jpg)
+
+同样write thread在进入下一个bucket之前也要释放上一个bucket的write latch，加上下一个bucket的write latch。
+
+![F41](./F41.jpg)
+
+* Slot Latch（每个slot加latch） *更小的粒度，对点查和插入有更好的并行性*。
+
+read thread通过`hash(key)`找到对应的slot，对那个slot加read latch。
+
+![F42](./F42.jpg)
+
+同样write thread，找到对应的slot，然后加write latch。
+
+![F43](./F43.jpg)
+
+write thread和read thread都执行正常的流程，但在进入下一个slot时，加上对应的latch。
+
+| | | |
+|-|-|-|
+|![F44](./F44.jpg)|⇨|![F45](./F45.jpg)|
+
+无论哪种方式，都需要对维护buckets的数据结构（可能是一个buckets数组）加read latch，以防这个数据结构出现变化导致segfault。
