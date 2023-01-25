@@ -45,6 +45,10 @@ System call是app将控制权交给kernel，并转化成kernel mode的方式。
 
 *NOTE:在x86、amd64这个指令是`TRAP`。*
 
+在hardware上有个寄存器记录了`trap table（陷阱表）`的地址。
+
+hardware将通过`trap table`来判断应该跳转到哪个System Call。
+
 ## Implmentation
 
 Kernel主要有两种设计方式：
