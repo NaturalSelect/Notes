@@ -227,7 +227,13 @@ DBMS的table heap是无序的，但是有时候我们想要让数据有序保存
 
 index中保存的page id的大小关系总是与某个属性（大部分是primary key）的大小关系一致。
 
+![F102](./F102.jpg)
+
 例如：`primary key A > primary key B` 那么在clustered index中，`A`保存在`B`后面，且在table heap中的顺序也是如此。
+
+而Non-Clustered Index不与物理布局匹配。
+
+![F103](./F103.jpg)
 
 ## Multikey Index
 
