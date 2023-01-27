@@ -279,7 +279,7 @@ I/O代价：`M + (M * N)`。
 
 ![F20](./F20.jpg)
 
-I/O代价：<code>M +  ($\frac{M}{B-2}$ * N)</code>
+I/O代价：<code>M +  ($\frac{M}{B-2}$ * N)</code>。
 
 其中<code>$\frac{M}{B-2}$</code>向上取整。
 
@@ -383,3 +383,101 @@ I/O代价：Sort Cost + Merge Cost。
 
 ## Hash Join
 
+最重要的join算法，进行join的首选算法。
+
+| | |
+|-|-|
+|![F16](./F16.jpg)|![F17](./F17.jpg)|
+
+Hash Join由以下步骤组成：
+1. Build - 循序扫描outter table，构建bucket hash table。
+
+![F47](./F47.jpg)
+
+2. Probe - 循序扫描inner table，对每一个tuple进行hash，找到对应的bucket，查看是否匹配，如果匹配就产生输出。
+
+![F48](./F48.jpg)
+
+![F46](./F46.jpg)
+
+Hash Table中存储的Value：
+* Full Tuple - 将tuple存在hash table中不需要再查table heap，对行存储更好。
+* Record Id - 存储record id，使hash table更小，对列存储更好。
+
+*NOTE:如果outter table能放入内存中，那么这种方式就非常快*。
+
+## Probe Phase Optimization
+
+在构建hash table时，我们可以为hash table构建一个bloom filter。
+
+这样不需要查看hash table，就可以知道某个key在不在hash table中。
+
+查询hash table之前先询问bloom filter。
+
+![F49](./F49.jpg)
+
+如果key在bloom filter中存在，再查询hash table。
+
+![F50](./F50.jpg)
+
+## Grace Hash Join
+
+Grace Hash Join是针对无法放入内存的outter table的Hash Join优化算法。
+
+它使用`N`个bucket hash table执行hash join。
+
+其中`N`是需要进行join的table数量。
+
+每个hash table有`B`个partition，其中`B`是能够使用的最大page数量。
+
+每个partition由几个page组成。
+
+| | |
+|-|-|
+|![F16](./F16.jpg)|![F17](./F17.jpg)|
+
+首先构建2个hash table。
+
+![F51](./F51.jpg)
+
+循序扫描每一个partition。
+
+![F52](./F52.jpg)
+
+遍历两个hash table中的相同位置的partition，如果发现匹配的tuple，则产生输出。
+
+![F53](./F53.jpg)
+
+当某个hash table的某个partition的page数量很大时，进行再次hash。
+
+![F54](./F54.jpg)
+
+另外一个table仅在key落到被再hash的partition时，进行再次hash。
+
+![F55](./F55.jpg)
+
+假设我们拥有足够的buffer。
+
+那么I/O代价是：`3(M + N)`。
+
+*NOTE:`3(M + N)`来自构建2个hash table（`2(M + N)`） + probe(`M + N`)。*
+
+假设`R:M = 1000,m = 100,000`。
+
+`S:N = 500,n = 40,000`。
+
+那么I/O代价是：`3(M + N) = 3(1000 + 500) = 4500 IOs`。
+
+假设每次I/O花费`0.1 ms`，那么总共需要使用`0.45 seconds`完成I/O。
+
+## Join Costs
+
+| Algorithm | I/O Cost | Example |
+|-|-|-|
+| Simple Nested Loop Join | `M + (m * N)` | `1.3 hours` |
+| Block Nested Loop Join | <code>M +  ($\frac{M}{B-2}$ * N)</code> | `50 seconds` |
+| Index Nested Loop Join | `M + (m * C)` | `Variable` |
+| Sort-Merge Join | `M + N + (Sort Cost)` | `0.59 seconds` |
+| Hash Join | `3(M + N)` | `0.49 second` |
+
+*NOTE:除非我们排好序（或请求要求排序）那么我们进行Sort-Merge Join，否则进行Hash Join。*
