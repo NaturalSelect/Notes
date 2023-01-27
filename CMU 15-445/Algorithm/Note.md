@@ -287,7 +287,7 @@ I/O代价：<code>M +  ($\frac{M}{B-2}$ * N)</code>
 
 `S:N = 500,n = 40,000`。
 
-并且`B > M + 2`。
+并且`B > M + 2`，即`B >= 1002`。
 
 那么I/O代价是：<code>M +  ($\frac{M}{B-2}$ * N) = 1000 + 500 = 1500 IOs</code>。
 
@@ -314,6 +314,72 @@ I/O代价：<code>M +  ($\frac{M}{B-2}$ * N)</code>
 
 ## Sort-Merge Join
 
+Sort-Merge Join是Nested Loop Join的替代品，有更好的性能。
 
+Sort-Merge Join由以下步骤组成：
+1. Sort - 将join的两张表按照join key进行排序（通常使用external merge sort）。
+2. Merge - 使用游标在两张table中扫描，执行join操作（有可能回溯游标）。
+
+比较两个curors，如果`outter > inner`,那么`inner + 1`。
+
+如果`outter < inner`,那么`outter + 1`，`inner`进行回溯。
+
+如果`outter == inner`，那么`emit tuple`。
+
+![F23](./F23.jpg)
+
+| | |
+|-|-|
+|![F24](./F24.jpg)|![F25](./F25.jpg)|
+
+| R(id,name) | S(id,value,cdata) | Output Buffer|
+|-|-|-|
+|![F26](./F26.jpg)|![F27](./F27.jpg)|![F28](./F28.jpg)|
+|![F26](./F26.jpg)|![F29](./F29.jpg)|![F30](./F30.jpg)|
+|![F26](./F26.jpg)|![F31](./F31.jpg)|![F30](./F30.jpg)|
+|![F32](./F32.jpg)|![F31](./F31.jpg)|![F33](./F33.jpg)|
+|![F35](./F35.jpg)|![F34](./F34.jpg)|![F33](./F33.jpg)|
+
+我们需要在inner table维护一些metadata。
+
+记录上次遇到的tuple以及它的连续个数（类似记录`<last key,count>`），这样我们就可以回溯inner cursor。
+
+但我们绝不回溯outter cursor。
+
+| R(id,name) | S(id,value,cdata) | Output Buffer|
+|-|-|-|
+|![F35](./F35.jpg)|![F36](./F34.jpg)|![F37](./F37.jpg)|
+|![F39](./F39.jpg)|![F38](./F38.jpg)|![F37](./F37.jpg)|
+|![F40](./F40.jpg)|![F38](./F38.jpg)|![F41](./F41.jpg)|
+|![F40](./F40.jpg)|![F42](./F42.jpg)|![F41](./F41.jpg)|
+|![F43](./F43.jpg)|![F42](./F42.jpg)|![F44](./F44.jpg)|
+|![F43](./F43.jpg)|![F45](./F45.jpg)|![F44](./F44.jpg)|
+
+Sort Cost(`R`)：<code>2M *  $\frac{\log M}{\log B}$</code>。
+
+Sort Cost(`S`)：<code>2N *  $\frac{\log N}{\log B}$</code>。
+
+Merge Cost：`M + N`（平均）,当inner和outter完全相同时，它是`M * N`。
+
+I/O代价：Sort Cost + Merge Cost。
+
+假设`R:M = 1000,m = 100,000`。
+
+`S:N = 500,n = 40,000`。
+
+使用 `B = 100` page。
+
+那么Sort Cost(`R`)是：<code>2M *  $\frac{\log M}{\log B}$ = 2000 * $\frac{\log 1000}{\log 100}$ = 3000 IOs</code>。
+
+那么Sort Cost(`S`)是：<code>2N *  $\frac{\log N}{\log B}$ = 2000 * $\frac{\log 500}{\log 100}$ = 1350 IOs</code>。
+
+那么Merge Cost是：`1000 + 500 = 1500 IOs`。
+
+那么I/O代价是：`3000 + 1350 + 1500 = 5850 IOs`。
+
+假设每次I/O花费`0.1 ms`，那么总共需要使用`0.59 seconds`完成I/O。
+
+*NOTE:如果要求排序，那么使用Sort-Merge Join会更好。*
 
 ## Hash Join
+
