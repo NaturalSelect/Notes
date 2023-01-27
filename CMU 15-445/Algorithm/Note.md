@@ -195,8 +195,125 @@ WHERE grade IN ('B','C');
 
 ## Join
 
+始终将小的table作为join的左表，大的table作为join的右表。
+
+```sql
+SELECT R.id,S.cdata
+ FROM R JOIN S
+   ON R.id = S.id
+WHERE S.value > 100;
+```
+
+有`M`个page在表`R`中，`m`个tuple在关系`R`中。
+
+有`N`个page在表`S`中，`n`个tuple在关系`S`中。
+
 ## Nested Loop Join
 
+Nested Loop Join（嵌套循环连接），是最简单的join算法。
+
+并且，cross product只能使用Nested Loop Join求值。
+
+## Simple Nested Loop Join
+
+| | |
+|-|-|
+|![F16](./F16.jpg)|![F17](./F17.jpg)|
+
+Simple Nested Loop Join相当于嵌套执行两个foreach。
+
+![F15](./F15.jpg)
+
+![F18](./F18.jpg)
+
+从两个关系中每次获取一个tuple，执行join操作。
+
+I/O代价：`M + (m * N)`。
+
+假设`R:M = 1000,m = 100,000`。
+
+`S:N = 500,n = 40,000`。
+
+那么I/O代价是：`M + (m * N) = 1000 + (100,000 * 500) = 50,001,000 IOs`。
+
+假设每次I/O花费`0.1 ms`，那么总共需要使用`1.3 hours`完成I/O。
+
+
+如果使用更小的table `S`作为outter table。
+
+那么I/O代价是：`N + (n * M) = 500 + (40,000 * 1000) = 40,000,500 IOs`。
+
+那么总共需要使用`1.1 hours`完成I/O。
+
+## Block Nested Loop Join
+
+Block Nested Loop Join是对Simple Nested Loop Join的优化。
+
+| | |
+|-|-|
+|![F16](./F16.jpg)|![F17](./F17.jpg)|
+
+它每次获取一个block而不是一个tuple来减少I/O代价。
+
+![F19](./F19.jpg)
+
+I/O代价：`M + (M * N)`。
+
+假设`R:M = 1000,m = 100,000`。
+
+`S:N = 500,n = 40,000`。
+
+那么I/O代价是：`M + (M * N) = 1000 + (1000 * 500) = 501,000 IOs`。
+
+假设每次I/O花费`0.1 ms`，那么总共需要使用`50 seconds`完成I/O。
+
+## Block Nested Loop Join Optimization
+
+假设我们最大使用`B`个page。
+
+| | |
+|-|-|
+|![F16](./F16.jpg)|![F17](./F17.jpg)|
+
+如果我们尽可能地把outter table放在memory中，用`B - 2`个page保存它（一个page需要放置inner table，一个page放置output）。
+
+![F20](./F20.jpg)
+
+I/O代价：<code>M +  ($\frac{M}{B-2}$ * N)</code>
+
+其中<code>$\frac{M}{B-2}$</code>向上取整。
+
+假设`R:M = 1000,m = 100,000`。
+
+`S:N = 500,n = 40,000`。
+
+并且`B > M + 2`。
+
+那么I/O代价是：<code>M +  ($\frac{M}{B-2}$ * N) = 1000 + 500 = 1500 IOs</code>。
+
+假设每次I/O花费`0.1 ms`，那么总共需要使用`0.15 seconds`完成I/O。
+
+## Index Nested Loop Join
+
+
+| | |
+|-|-|
+|![F16](./F16.jpg)|![F17](./F17.jpg)|
+
+如果我们在join的column上有index。
+
+![F21](./F21.jpg)
+
+那么还可以采取另一种方式。
+
+![F22](./F22.jpg)
+
+假设`C`为在index中探测每个tuple的成本。
+
+那么I/O代价为：`M + (m * C)`。
+
 ## Sort-Merge Join
+
+
 
 ## Hash Join
