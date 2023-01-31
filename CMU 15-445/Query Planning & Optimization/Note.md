@@ -45,7 +45,63 @@ _NOTE:tuple set是无序的，所以我们会忽略`ORDER BY`语句，这让我�
 
 并不一直work，因为有些user-defined function会导致filter的执行成本很高（例如执行某些自定义的c或者python code）。
 
+### Projection Pushdown
+
+通过提前处理projection（投影）来减少tuple的传递到树的上部的数量。
+
+![F6](./F6.jpg)
+
+![F7](./F7.jpg)
+
+*NOTE:在分布式数据库中很常见。*
+
+### Rmove Impossible/Unnecessary Predicates
+
+删除某些不必要的谓词，来减少不必要的计算。
+
+![F8](./F8.jpg)
+
+返回一个empty set。
+
+| | | |
+|-|-|-|
+|![F9](./F9.jpg)|⇨|![F10](./F10.jpg)|
+
+### Join Elimination
+
+删除不必要的join操作。
+
+| | | |
+|-|-|-|
+|![F11](./F11.jpg)|⇨|![F12](./F12.jpg)|
+
+此处`id`为`A`的主键，只有当key不可为null并且unique时才能做这种优化。
+
+### Ignore Projections
+
+删除不必要的projection。
+
+| | | |
+|-|-|-|
+|![F13](./F11.jpg)|⇨|![F14](./F12.jpg)|
+
+### Merge Predicates
+
+将多个filters合并成一个，减少计算量。
+
+| | | |
+|-|-|-|
+|![F15](./F11.jpg)|⇨|![F16](./F12.jpg)|
+
 ## Plan Cost Estimation
+
+查询的速度由以下因素影响：
+* CPU Cost - 影响小且难以估计。
+* Disk - 需要传输的block的数量。
+* Memory - 需要使用的内存数量。
+* Network - 需要传输的消息数量。
+
+
 
 ## Plan Enumeration
 
