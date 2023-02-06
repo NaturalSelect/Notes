@@ -132,3 +132,5 @@ Dependency Graphs（依赖图）：
 | | |
 |-|-|
 |![F23](./F23.jpg)|![F24](./F24.jpg)|
+
+## Two Phase Locking
