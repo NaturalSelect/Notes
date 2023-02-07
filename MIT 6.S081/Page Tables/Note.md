@@ -59,6 +59,7 @@ PTE包含很多权限Flags：
 * Executable - 长度 `1 bit`，为 `1` 代表所引用的page可执行。
 * User - 长度 `1 bit`，为 `1` 代表所引用的page可以被运行在user space的process访问。
 * Global - 长度 `1 bit`，为 `1` 代表所引用的page。
+* RSW - 长度 `2 bits`，Resevered for supervisor software，为kernel预留。
 
 另一些Flags用于支持`swap`（通常是`Clock替换算法`）：
 
