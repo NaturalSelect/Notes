@@ -117,3 +117,9 @@ XV6将process的kernel thread context保存在`process`结构的`context`字段�
 *NOTE:记得释放之前acquire的lock。*
 
 ![F10](./F10.jpg)
+
+当kernel thread在调用`switch()`时不允许拥有任何其他locks，他只能持有`process`结构的lock。
+
+当kernel thread持有锁时执行`switch()`，如果下一个thread也需要这个锁，那么我们会在单核场景下引发死锁（因为被`switch()`的线程持有该线程需要的锁，而`acquire()`会关闭中断，所以时钟中断无法帮助我们，避免死锁），多核场景下也有类似的情况（即持有多个锁时可能产生）。
+
+![F11](./F11.jpg)
