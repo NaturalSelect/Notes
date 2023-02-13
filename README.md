@@ -2,4 +2,4 @@
 
 鼠鼠的笔记本。
 
-<img src="README.gif" width=20%/>
+<img src="README.gif" width="20%"/>
