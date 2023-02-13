@@ -28,6 +28,18 @@ kernel通过`sleep()`和`wakeup()`函数进行协作。
 
 ![F4](./F4.jpg)
 
+## Sleep Lock
+
+Sleep Lock是一个特别的spin lock，它使进程在无法获得lock时sleep。
+
+|`acquire()`|`release()`|
+|-|-|
+|![F18](./F18.jpg)|![F19](./F19.jpg)|
+
+使用Sleep Lock的原因：
+* 临界区需要很长的时间才能执行完成。
+* 我们希望在临界区中打开中断。
+
 ## Kernel Thread Exit
 
 我们不能粗暴地终止一个kernel thread：
