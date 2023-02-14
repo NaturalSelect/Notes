@@ -222,7 +222,7 @@ logging能提供如下保证：
 
 ![F30](./F30.jpg)
 
-`log_write()`首先查看block的block number是否已被记录，如果没有再写入block number到log中。
+`log_write()`首先查看block的block number是否已被记录（write absorbtion），如果没有再写入block number到log中。
 
 ![F27](./F27.jpg)
 
@@ -263,6 +263,107 @@ logging能提供如下保证：
 
 *NOTE:事务被分割（例如大写入）也是block cache不能evict且没有空间时panic的原因，因为我们不能从该调用中返回否则会破坏原子性，部分事务提交了但还有一部分没有。*
 
-## File System Performance
+## File System Performance And Fast Crash Recovery（Ext3 File System）
 
-## Fast Crash Recovery
+ext3的结构与XV6类似。
+
+*NOTE:jourual是log的别名。*
+
+![F39](./F39.jpg)
+
+在内存中存在block cache（一种write-back cache）。
+
+除此之外，还维护多个事务信息。
+
+每个事务的信息如下：
+* 一个唯一的事务序列号。
+* 该事务修改的block numbers。
+* 以及一系列的handle（handle对应了系统调用）。
+
+![F40](./F40.jpg)
+
+在磁盘中保存了文件系统树（inode、directory、file），也有一个bitmap block表明data blocks的空闲状态。
+
+并在磁盘中指定一块区域保存log。
+
+![F41](./F41.jpg)
+
+Ext3的日志结构如下：
+* Super Block - 包含了log中第一个有效的transaction的offset和序列号。
+* 每一个事务包含一个Descriptor Block - 该block保存了修改过的文件系统block的numbers数组、transaction的序列号和一些metadata。
+* 每一个事务将修改过的blocks放在它的descriptor block的后面。
+* 每一个事务以Commit Block结尾（如果它成功提交）- 该block同样保存了transaction的序列号。
+
+![F42](./F42.jpg)
+
+descriptor block和commit block会以一个32bits的magic number开头，来将它们与其他blocks区分开。
+
+ext3采用与XV6类似的3阶段方法，系统调用只修改block cache，当事务提交时，再把修改的cache落盘到log上，最后重放log完成对应block的更新。
+
+所以磁盘上的log是串行写入的，descriptor block与commit block之间不会存在第二个descriptor block。
+
+ext3高性能的原因：
+* 提供了Asynchronous System Call - 系统调用在数据落盘之前返回，写操作只更新block cache，读操作可能会从磁盘中读（如果没有cache）。
+* 提供了批量处理（batching）的能力 - 将多个系统调用打包成一个transaction，由于系统调用可以很快返回，process可以在短时间内发起多个系统调用。
+* 提供了I/O Concurrency - 允许多个系统调用并行执行，同时系统调用很快返回，process可以更快向下执行让计算与I/O重叠。
+
+但是Asynchronous System Call也带来了问题：
+* 系统调用返回并不表示该完成的工作完成了。
+* 需要使用`fsync()`系统调用来等待数据落盘。
+
+在ext3中，一个transaction可以包含多个系统调用，例如kernel打开一个transaction，然后接下来的几秒的系统调用都属于这个transaction。
+
+在默认情况下ext3，每`5 sec`创建一个新的transaction，这样可以包含大量的系统调用，并且更容易出现write absorbtion节省log的空间，同时更利于磁盘调度，驱动可以重新排序这些blocks，按顺序写入。
+
+一个ext3系统调用以`start()`开始，它返回一个handle。
+
+从block cache获取缓存时需要使用这个handle。
+
+transaction会跟踪所有的handles，只有全部系统调用都完成，这个transaction才能提交。
+
+![F43](./F43.jpg)
+
+`stop()`用于关闭一个文件系统调用。
+
+提交一个transaction需要执行以下步骤：
+1. 阻塞新的系统调用直到彻底完成commit。
+2. 等待未完成的系统调用完成。
+3. 为后续系统调用打开一个新的transaction。
+4. 写入descriptor block到磁盘。
+5. 写入被修改的blocks到磁盘。
+6. 等待`4`和`5`完成。
+7. 写入commit block到磁盘。
+8. 等待`7`完成。
+9. 将log中修改的blocks应用到文件系统上。
+10. 重用transaction对应的空间。
+
+![F44](./F44.jpg)
+
+ext3的log类似一个环形缓冲区。
+
+![F45](./F45.jpg)
+
+*NOTE:当提交新transaction的log空间不够时，需要等待旧的transaction落盘完成,这样才能有空间储存log。*
+
+在恢复时，ext3从super block开始扫描整个log，直到它回到super block。
+
+在扫描过程中小于super block记录的序列号的descriptor block会被忽略（防止重复commit），未commit的transaction也会被忽略。
+
+并且只有descriptor block和commit block里的magic number都正确，才会认为这是一个正确的transaction。
+
+当一个data block以这个magic number开始时，ext3修改这个block把它设置为`0`，然后在descriptor block中添加一个元数据，表示我们修改了它，在应用日志时再进行还原。
+
+在提交时，阻塞新系统调用的原因：事务之间共享block cache，如果系统调用发生重排，并且它们不再一个事务中就可能破坏崩溃一致性。
+
+例如此处<code>T<sub>2</sub></code>的`unlink()`，重排在<code>T<sub>1</sub></code>的`creat()`前，<code>T<sub>2</sub></code>崩溃时未提交导致两个文件使用了同一个inode。
+
+![F46](./F46.jpg)
+
+*NOTE:在transaction提交时，还会拷贝涉及到的blocks，防止后面的transaction修改了block cache，导致向磁盘中写入脏数据。*
+
+*NOTE:ext4会同时写入commit block和所有的被修改的blocks，并在commit block中添加checksum来避免磁盘调度导致commit blocks先写入的问题。*
+
+对于data blocks，ext3有三种模式：
+* Journal - 对所有blocks的修改都被写入日志。
+* Ordered - 只有metadata blocks和目录的data blocks的修改被写入日志，ext3的默认模式。
+* Writeback - 只有metadata blocks的修改被写入日志（且不跟踪inode中文件大小的改变）。
