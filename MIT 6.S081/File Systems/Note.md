@@ -141,11 +141,127 @@ Directory本质上是一个文件，这种文件的格式能够被文件系统�
 
 *NOTE:当refcnt为`0`时，`brelease()`将cache移动到链表的头部（表示它最近刚使用过，与其他refcnt为`0`的caches相比它最不可能被evict，LRU Cache），只有refcnt为`0`的cache能被evict。*
 
-|`bread()`|`bwrite`|
+|`bread()`|`bwrite()`|
 |-|-|
 |`bread()`先检查block cache中是否存在block，如果不存在分配一个新的cache，将从磁盘读入的数据放到该cache上。![F12](./F12.jpg)|在执行`bwrite()`时必须持有sleep lock，防止竟态条件出现，同时必须在cache上修改数据。![F15](./F15.jpg)|
 
+`bpin()`可以在block被释放之后（refcnt为`0`）保证其不被evict。
+
+除非`bunpin()`被调用。
+
+|`bpin()`|`bunpin()`|
+|-|-|
+|![F24](./F24.jpg)|![F25](./F25.jpg)|
+
 ## Crash Recovery
+
+当crash和电力故障产生时，可能会导致磁盘上的文件系统处于不一致或不正确的状态中，例如：一个data block属于两个文件。
+
+![F16](./F16.jpg)
+
+许多文件系统的操作都包含多个步骤，如果我们在多个步骤的错误的位置上崩溃，系统重启时文件系统就会处于一种不一致的状态。
+
+对于这类问题，logging（Write ahead logging，预写日志）是一个很好的解决方案。
+
+![F17](./F17.jpg)
+
+在写入到父目录的data block之前崩溃，我们可能会失去一个inode。
+
+![F18](./F18.jpg)
+
+我们可能调整操作的顺序来避免失去inode，但是会出现另外一个问题：inode可能存在double use。
+
+![F19](./F19.jpg)
+
+在写入文件的inode之前崩溃，可能会失去data block。
+
+![F20](./F20.jpg)
+
+同样，调整顺序可以避免失去data block，但会存在double use。
+
+![F21](./F21.jpg)
+
+要彻底解决这些问题，必须把多个步骤的操作原子化。
+
+logging能提供如下保证：
+* 保证文件系统调用是原子的。
+* 支持快速恢复（fast recovery）。
+* 可以被高效实现。
+
+每一次写入，先写log，而不是直接写block。
+
+当所有写入都进入log时，在log的commit记录写入属于同一个文件系统的操作个数（通常用占用log blocks的数量表示，对一个block的修改需要占用一个log block）。
+
+当磁盘保存log blocks之后，我们执行install操作，在文件系统中执行log中记录的操作。
+
+最后清除log，将log中记录的写入次数设置为`0`。
+
+![F22](./F22.jpg)
+
+当重启时，文件系统查看log的commit记录，如果是`0`那就什么都不做。
+
+如果非`0`那么某些操作需要被写入文件系统，我们重新执行install，然后清除log。
+
+![F23](./F23.jpg)
+
+![F26](./F26.jpg)
+
+在XV6中，所有对文件系统的操作都以`begin_op()`开始，以`end_op()`结束。
+
+![F38](./F38.jpg)
+
+`begin_op()`将开启一个事务（transaction）。
+
+![F28](./F28.jpg)
+
+![F29](./F29.jpg)
+
+`end_op()`将执行commit操作，将数据写入log中。
+
+必须通过`log_write()`而不是`bwrite()`对block进行写入。
+
+![F30](./F30.jpg)
+
+`log_write()`首先查看block的block number是否已被记录，如果没有再写入block number到log中。
+
+![F27](./F27.jpg)
+
+然后使用`bpin()`将该block固定在cache中，防止由于该block被evict导致更新丢失。
+
+`end_op()`先查看有没有process在等待log，如果有则唤醒该process（该process不一定可以运行，可能的条件仍不满足它运行），然后什么都不做（减少操作磁盘的次数，由后面的process来commit，group commit）。
+
+*NOTE:group commit必须按序进行，防止出现系统调用被重排的现象。*
+
+![F31](./F31.jpg)
+
+如果没有，则进行commit。
+
+`commit()`首先将cache中的block写入到log中，然后执行commit步骤，把log header（标记了有几个block）写入到log blocks的首个block中。
+
+*NOTE:并且commit还需要唤醒其他process，告诉它们log有空间了。*
+
+|`commit()`|`write_log()`|`write_head()`|`install_trans()`|
+|-|-|-|-|
+|![F32](./F32.jpg)|![F33](./F33.jpg)|![F34](./F34.jpg)|![F35](./F35.jpg)|
+
+然后执行install操作，最后清除log。
+
+*NOTE:只有当前不处在recovery阶段才需要`bunpin()`，因为recovery时，并没有pin住blocks。*
+
+![F36](./F36.jpg)
+
+在启动XV6的过程中，`initlog()`会被调用。
+
+![F37](./F37.jpg)
+
+*NOTE：XV6的实现并不高效，每次写入都需要write ahead log。*
+
+实现logging的挑战：
+* 当Block cahce满时，不能evict在cache中的block。
+* 所有操作必须能放在log中，不能超过log的大小，否则事务可能被分割或拒绝。
+* 并发文件系统调用，多个进程可能同时打开事务，这样很容易耗尽log的空间，并且不能提交任何事务，因为它们未完成，必须在启动事务前检查是否有足够的log block。
+
+*NOTE:事务被分割（例如大写入）也是block cache不能evict且没有空间时panic的原因，因为我们不能从该调用中返回否则会破坏原子性，部分事务提交了但还有一部分没有。*
 
 ## File System Performance
 
