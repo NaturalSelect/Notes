@@ -478,6 +478,6 @@ Grace Hash Join是针对无法放入内存的outter table的Hash Join优化算�
 | Block Nested Loop Join | <code>M +  ($\frac{M}{B-2}$ * N)</code> | `50 seconds` |
 | Index Nested Loop Join | `M + (m * C)` | `Variable` |
 | Sort-Merge Join | `M + N + (Sort Cost)` | `0.59 seconds` |
-| Hash Join | `3(M + N)` | `0.49 second` |
+| Hash Join | `3(M + N)` | `0.49 seconds` |
 
 *NOTE:除非我们排好序（或请求要求排序）那么我们进行Sort-Merge Join，否则进行Hash Join。*
