@@ -159,7 +159,7 @@ kernel在内存中设置一个DMA Ring，里面存的是packet的指针，每一
 
 *NOTE：DMA Ring是一个环形缓冲。*
 
-当DMA传输完成后，将产生一个中断（或驱动可以使用轮询的方式检查ring）。
+当DMA传输完成后，将产生一个中断。
 
 ![F18](./F18.jpg)
 
@@ -178,6 +178,8 @@ kernel在内存中设置一个DMA Ring，里面存的是packet的指针，每一
 ![F20](./F20.jpg)
 
 由于中断的原因，吞吐量在到底顶峰后急速下降（大量的CPU时间被用来处理中断），下降的曲线称为中断的Livelock。
+
+Livelock不仅会因为CPU耗尽而发生，也可能是其他原因，比如说网卡的DMA耗尽了RAM的处理时间，那么网卡占据了RAM导致CPU不能使用RAM。
 
 解决Livelock：
 * interrupt handler在接收中断后唤醒处理packet的thread并关闭NIC的中断（让NIC即使有packet到达也不再产生中断）。
