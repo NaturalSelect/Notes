@@ -180,7 +180,7 @@ kernel在内存中设置一个DMA Ring，里面存的是packet的指针，每一
 由于中断的原因，吞吐量在到底顶峰后急速下降（大量的CPU时间被用来处理中断），下降的曲线称为中断的Livelock。
 
 解决Livelock：
-* interrupt handler在接收中断后唤醒处理packet的thread并关闭中断。
+* interrupt handler在接收中断后唤醒处理packet的thread并关闭NIC的中断（让NIC即使有packet到达也不再产生中断）。
 * 处理packet的thread使用循环从NIC中获取几个packet。
 * 然后处理packet。
 * 循环直到没有packet可读。
