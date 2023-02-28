@@ -28,7 +28,7 @@ page table需要硬件实现。
 
 当OS切换process时，也会用新的page table地址替换`SATP`寄存器的旧值。
 
-*NOTE:OS切换procees时还需要清除TLB。*
+*NOTE:OS切换procees（page table）时还需要清除TLB，也要清除L1 Cache（该cache使用virtual address进行索引）。*
 
 只有在kernel mode下才能更新`SATP`寄存器。
 
