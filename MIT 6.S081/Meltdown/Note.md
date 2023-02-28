@@ -82,4 +82,4 @@ Meltdown攻击的步骤如下：
 
 修复方案：
 * 软件方式 - 不把Kernel的内存映射到user address space（KAISER），会增加system call的开销。
-* 硬件方式 - 在执行`load`指令时对cache进行权限检查，使Meltdown无法读出正确的kernel memory bit，会增加`load`指令的开销。
+* 硬件方式 - 在执行`load`指令时对cache进行权限检查（因为CPU的Speculation只能读cache），使Meltdown无法读出正确的kernel memory bit，会增加`load`指令的开销。
