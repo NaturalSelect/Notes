@@ -1,6 +1,6 @@
 # Meltdown
 
-Meltdown是一种微架构攻击（一种利用CPU内部隐藏细节的攻击）。
+Meltdown是一种微架构攻击（一种利用CPU内部隐藏细节的攻击），用于查看kernel的内存。
 
 ![F1](./F1.jpg)
 
