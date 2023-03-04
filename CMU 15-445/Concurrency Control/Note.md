@@ -133,4 +133,168 @@ Dependency Graphs（依赖图）：
 |-|-|
 |![F23](./F23.jpg)|![F24](./F24.jpg)|
 
-## Two Phase Locking
+## Executing With Locks
+
+设置一个全局的lock manager，lock manager维护着谁拥有锁，对每一个tuple执行相应的操作之前必须先获取相应的lock。
+
+![F25](./F25.jpg)
+
+如果事务没有获取到相应的lock，它唯一能做的就是等待，直到其他事务释放锁。
+
+![F26](./F26.jpg)
+
+## Lock Types
+
+![F27](./F27.jpg)
+
+两种基本的lock types：
+* `S-Lock` - 读操作的共享锁。
+* `X-Lock` - 写操作的独占锁。
+
+![F28](./F28.jpg)
+
+![F29](./F29.jpg)
+
+### Hierarchical Locking（层级锁）
+
+![F46](./F46.jpg)
+
+为了减少事务需要获得lock的数量，lock被设计成不同的粒度：
+* Table Lock - 锁住整张table。
+* Page Lock - 锁住一个page。
+* Tuple Lock - 锁住一个tuple。
+
+同时引进了Intention Locks：
+* Intention Shared Lock（IS，意图共享锁） - 表示你需要在该层次下面使用shared lock锁住一个object（例如读取表中的某个tuple，在表上加IS）。
+* Intention Exclusive Lock（IX,意图独占锁） - 表示你需要在该层次下面使用exclusive lock锁住一个object（例如写表中的某个tuple，在表上加IX）。
+* Shared Intention Exclusive Lock（SIX，共享意图独占锁） - 表示在该层次有一个shared lock，但是你需要在该层次下面使用一个exclusive lock（例如读取整张表，但是需要更新其中一个tuple，就需要在表上加SIX）。
+
+![F47](./F47.jpg)
+
+为了得到一个shared lock，必须在其父节点上得到一个S lock或IS lock，同时为了得到一个exclusive lock必须在其父节点上得到一个X lock、SIX lock或者IX lock。
+
+|Read a tuple|Write a tuple|
+|-|-|
+|![F48](./F48.jpg)|![F49](./F49.jpg)|
+
+|Scan table and update few tuples|Read a tuple|Scan table|
+|-|-|-|
+|![F50](./F50.jpg)|![F51](./F51.jpg)|![F52](./F52.jpg)|
+
+同时SQL也允许你显示使用table lock，但它们不是标准的一部分。
+
+![F53](./F53.jpg)
+
+DB2、Postgresql、Oracle：
+
+```sql
+LOCK TABLE <TABLE NAME> IN <MODE> MODE;
+```
+
+SQL Server：
+
+```sql
+SELECT 1 FROM <TABLE> WITH (TABLOCK,<MODE>);
+```
+
+Mysql：
+
+```sql
+LOCK TABLE <TABLE> <MODE>;
+```
+
+同时在执行scan table and update时，也可以给DBMS一个提示。
+
+```sql
+SELECT * 
+FROM <TABLE>
+WHERE <FILTER>
+FOR UPDATE; 
+```
+
+## Two Phase Locking（2PL）
+
+![F33](./F33.jpg)
+
+2PL分为两个阶段：
+* Growing - 事务获得它需要的锁。
+* Shrinking - 当它获得完它需要的所有的锁之后，进入释放阶段，这时不能再获得更多的锁。
+
+违反该协议可能导致不可重复读。
+
+|可冲突串行化|不可冲突串行化|
+|-|-|
+|![F30](./F30.jpg)|![F33](./F35.jpg)|
+|![F32](./F32.jpg)|![F31](./F31.jpg)|
+
+2PL的问题：
+* Cascading Aborts - 级联中止。
+ 
+![F34](./F34.jpg)
+
+*NOTE：因为T1终止，而T2读到了T1写入的值所以T2也终止，如果不终止则产生脏读。*
+
+* Deadlock - 由锁定顺序不一致产生的死锁。
+
+*NOTE：同时为了支持2PL，lock manager必须支持锁升级（从S lock升级到X lock）。*
+
+## Strong Strict Two Phase Locking（Rigorous Two Phase Locking）
+
+为了处理Cascading Aborts的问题，我们延长Shrinking阶段，直到事务结束再释放锁。
+
+![F36](./F36.jpg)
+
+*NOTE:术语strict在并发控制领域中的意思是，直到你提交事务，你所做的变更才会被其他事务可见。*
+
+![F37](./F37.jpg)
+
+|No 2PL|2PL|Strong Strict 2PL|
+|-|-|-|
+|![F38](./F38.jpg)|![F40](./F40.jpg)|![F42](./F42.jpg)|
+|![F39](./F39.jpg)|![F41](./F41.jpg)|![F41](./F41.jpg)|
+
+*NOTE:Strong Strict 2PL在实践中常见，因为系统无法判断出是否可以立刻释放lock。*
+
+## Deadlock Detection And Prevetion
+
+![F43](./F43.jpg)
+
+deadlock是事务间彼此成环，等待对方释放自己所需要的锁。
+
+有两种方式解决死锁：
+* Detection - 死锁检测。
+* Prevetion - 死锁预防。
+
+### Deadlock Detection
+
+DBMS构建一个等待图（wait-for graph），每一个事务就是图中的点，事务间的依赖则是图中的边，DBMS周期性地检查图中是否存在环，如果存在则杀死一个环中的事务
+
+*NOTE:等待图的检查周期通常是DBMS能容忍的最长的陷入死锁的等待时间。*
+
+受害者选择方式：
+* By age - 通过事务的时间戳决定。
+* By progress - 通过事务已执行的查询数量决定。
+* By count of locks - 通过事务占有的锁决定。
+* By count of rollback transactions - 通过终止后需要进行Cascading Aborts的事务数量决定。
+
+同时必须处理饥饿的情况，不能让同一个事务一直被回滚。
+
+### Deadlock Prevetion
+
+较老的事务有更高的优先级，总是杀死较低优先级的事务。
+
+有两种方式：
+* Wait-Die - 老事务要求新事务的锁则等待新事务，新事务要求老事务的锁则自杀。
+* Wound-Wait - 老事务要求新事务的锁则杀死新事务，新事务要求老事务的锁则等待。
+
+| | |
+|-|-|
+|![F44](./F44.jpg)|![F45](./F45.jpg)|
+
+*NOTE:本质是保证按一定顺序获得锁。*
+
+当事务被杀死重启后，它使用原来的时间戳而不是获取一个新的，这样能防止饥饿问题产生。
+
+## Timestamp Ordering Concurrency Control
+
+## Multi-Version Concurrency Control
