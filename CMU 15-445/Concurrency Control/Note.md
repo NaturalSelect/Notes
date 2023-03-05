@@ -295,6 +295,12 @@ DBMS构建一个等待图（wait-for graph），每一个事务就是图中的�
 
 当事务被杀死重启后，它使用原来的时间戳而不是获取一个新的，这样能防止饥饿问题产生。
 
+### Phantom Problem Of Insert Tuple（幻读问题）
+
+![F101](./F101.jpg)
+
+2PL和SS2PL不能解决这个问题（不使用层级锁的情况下），需要使用index locking在某个column上加锁。
+
 ## Timestamp Ordering Concurrency Control
 
 悲观并发控制（如2PL）是假设数据库事务存在大量的争用的保守方案。
@@ -395,17 +401,59 @@ OCC的写入由多个阶段组成：
 Validation Phase负责检测事务之间的读写冲突和写写冲突。
 
 Validation的方法有两种：
-* Backward Validation - 当事务提交时，查看所有已经提交的老事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
+* Backward Validation - 当事务提交时，查看所有已经提交（验证）的老事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
   
 ![F82](./F82.jpg)
-* Forward Validation - 当事务提交时，查看所有未提交的新事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
+* Forward Validation - 当事务提交时，查看所有未提交（验证）的新事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
   
+*NOTE：这种方式实际上不需要read timestamp。*
+
 ![F83](./F83.jpg)
 
 |All transactions commited|T1 Aborts|All transactions commited（Reorder）|
 |-|-|-|
 |![F84](./F84.jpg)|![F85](./F85.jpg)|![F86](./F86.jpg)|
 
+|Schedule|
+|-|
+|![F87](./F87.jpg)|
+|![F88](./F88.jpg)|
+|![F89](./F89.jpg)|
+|![F90](./F90.jpg)|
+
+*NOTE:Validation Phase和Write Phase必须是一步不可分割的原子操作。*
+
+研究显示在冲突很多的workload中，2PL和OCC通常来讲都不可行，它们的效果几乎是一样的。
+
+|吞吐量|提交率|时延|
+|-|-|-|
+|![F91](./F91.jpg)|![F92](./F92.jpg)|![F93](./F93.jpg)|
+
 ## Partition-based Timestamp Ordering Protocol
+
+对数据库进行水平分区，这样只涉及单个分区的事务既不需要lock也不需要latch（如果每个分区只由一个线程操作）。
+
+![F94](./F94.jpg)
+
+可以把客户信息、对应的订单信息和对应的商品信息都放在一个分区中，这样就能避免跨分区操作。
+
+| | | |
+|-|-|-|
+|![F95](./F95.jpg)|⇨|![F96](./F96.jpg)|
+
+在实践中每一个分区由单个lock保护：
+* 每一个事务会被加入到它所需要操作的数据的分区的队列中（按时间戳排序）。
+* 当事务在每一个队列的对头时，它获得这个分区的锁。
+* 当事务获得它所需要所有分区的锁时，它开始执行。
+* 当事务尝试获取一个lock时，它终止并重启（通常意味着DBMS猜测失败，需要将事务重新加入到队列中）。
+
+|Schedule|
+|-|
+|![F97](./F97.jpg)|
+|![F98](./F98.jpg)|
+|![F99](./F99.jpg)|
+|![F100](./F100.jpg)|
+
+在存储过程式事务中，且事务只访问一个分区，这种方式就非常快速，但是存在热点问题。
 
 ## Multi-Version Concurrency Control
