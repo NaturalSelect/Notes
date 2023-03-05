@@ -320,6 +320,8 @@ DBMS通过某种方式为每一个事务分配唯一的时间戳，以此来预�
 * Read Timestamp - 最晚读取该tuple的事务的时间戳。
 * Write Timestamp - 最晚写入该tuple的事务的时间戳。
 
+*NOTE:使用这种方式必须在事务进入系统时分配timestamp。*
+
 对于一个读操作，需要确保该事务的时间戳大于tuple的write timestamp：
 * 如果不满足这个条件则事务因这个读操作终止，并在稍后以一个新的时间戳重启（事务不能读取到未来写入的值）。
 * 如果满足这个条件则更新tuple的read timestamp为`MAX(R-TS(tuple),TS(T))`，并且一旦读取成功，则立刻拷贝tuple到private space中（为了保证可重复读）。
@@ -369,7 +371,40 @@ DBMS通过某种方式为每一个事务分配唯一的时间戳，以此来预�
 
 ![F72](./F72.jpg)
 
+OCC的写入由多个阶段组成：
+* Read Phase - 跟踪每一个事务的读取和写入，并把写入存储在private space中。
+* Validation Phase - 事务提交时，验证是否与其他事务冲突。
+* Write Phase - 如果验证成功，将更改应用到数据库中，否则重启事务。
 
+*NOTE：这种方式不必在事务进入系统时分配时间戳，事务提交时（验证阶段）才会分配时间戳，所以任何操作都会导致private space中的tuple的timestamp被修改为无穷大。*
+
+|Schedule|
+|-|
+|![F73](./F73.jpg)|
+|![F74](./F74.jpg)|
+|![F75](./F75.jpg)|
+|![F76](./F76.jpg)|
+|![F77](./F77.jpg)|
+|![F78](./F78.jpg)|
+|![F79](./F79.jpg)|
+|![F80](./F80.jpg)|
+|![F81](./F81.jpg)|
+
+*NOTE:最简单的实现方式是在开始事务和验证事务时获取同一个latch。*
+
+Validation Phase负责检测事务之间的读写冲突和写写冲突。
+
+Validation的方法有两种：
+* Backward Validation - 当事务提交时，查看所有已经提交的老事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
+  
+![F82](./F82.jpg)
+* Forward Validation - 当事务提交时，查看所有未提交的新事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
+  
+![F83](./F83.jpg)
+
+|All transactions commited|T1 Aborts|All transactions commited（Reorder）|
+|-|-|-|
+|![F84](./F84.jpg)|![F85](./F85.jpg)|![F86](./F86.jpg)|
 
 ## Partition-based Timestamp Ordering Protocol
 
