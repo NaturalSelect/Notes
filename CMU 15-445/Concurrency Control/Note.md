@@ -297,4 +297,80 @@ DBMS构建一个等待图（wait-for graph），每一个事务就是图中的�
 
 ## Timestamp Ordering Concurrency Control
 
+悲观并发控制（如2PL）是假设数据库事务存在大量的争用的保守方案。
+
+而乐观并发控制（OCC）则允许事务在读写tuple时不需要获取锁，这在少量争用的情况下有更好的性能。
+
+Timestamp Ordering（T/O） Concurrency Control是一种OCC。
+
+DBMS通过某种方式为每一个事务分配唯一的时间戳，以此来预定义这些事务的提交顺序。
+
+函数`TS()`返回事务的时间戳，当<code>TS(T<sub>i</sub>) < TS(T<sub>j</sub>)</code>时，DBMS必须保证事务<code>T<sub>i</sub></code>提交在事务<code>T<sub>j</sub></code>之前。
+
+时间戳分配策略：
+* System Clock - 询问CPU当前的时间又称墙上时钟（wall clock），难以保证唯一性，在分布式场景下存在时钟错误，时钟可能会回调。
+* Logical Counter - 使用递增的逻辑计数器，超过最大值将产生回绕。
+* Hybrid - 混合两种方案，大多数系统使用这种方法。
+
+可以在事务执行期间的任意时间点给事务分配时间戳。
+
+## Basic Timestamp Ordering Protocol
+
+为了在不使用lock读取tuple时保证正确性，需要往数据库系统中的每一个tuple都加入2个时间戳：
+* Read Timestamp - 最晚读取该tuple的事务的时间戳。
+* Write Timestamp - 最晚写入该tuple的事务的时间戳。
+
+对于一个读操作，需要确保该事务的时间戳大于tuple的write timestamp：
+* 如果不满足这个条件则事务因这个读操作终止，并在稍后以一个新的时间戳重启（事务不能读取到未来写入的值）。
+* 如果满足这个条件则更新tuple的read timestamp为`MAX(R-TS(tuple),TS(T))`，并且一旦读取成功，则立刻拷贝tuple到private space中（为了保证可重复读）。
+
+对于一个写操作，需要确保该事务的时间戳大于tuple的read timestamp和write timestamp：
+* 如果不满足这个条件则事务因这个写操作终止，并在稍后以一个新的时间戳重启（事务不能破坏其他事务的读操作并且不能覆盖掉未来的写）。
+* 如果满足这个条件则更新tuple的write timestamp为`TS(T)`并写入tuple，一旦写入成功，则立刻拷贝tuple到private space中（为了保证可重复读）。
+
+|All transactions commited|T1 aborts|
+|-|-|
+|![F54](./F54.jpg)|![F62](./F62.jpg)|
+|![F55](./F55.jpg)|![F63](./F63.jpg)|
+|![F56](./F56.jpg)|![F64](./F64.jpg)|
+|![F57](./F57.jpg)|![F65](./F65.jpg)|
+|![F58](./F58.jpg)|![F66](./F66.jpg)|
+|![F59](./F59.jpg)|-|
+|![F60](./F60.jpg)|-|
+|![F61](./F61.jpg)|-|
+
+### Thomas Write Rule（托马斯写入规则）
+
+对于一个写操作，需要确保该事务的时间戳大于tuple的read timestamp：
+* 如果事务的时间戳小于tuple的read timestamp终止事务。
+* 如果时间戳小于tuple的write timestamp，在private space中保留副本，但是忽略该写操作（Thomas Write Rule）。
+* 如果满足这个条件则更新tuple的write timestamp为`TS(T)`并写入tuple，一旦写入成功，则立刻拷贝tuple到private space中（为了保证可重复读）。
+
+|T1 aborts（No Thomas Write Rule）|All transaction commited（Thomas Write Rule）|
+|-|-|
+|![F62](./F62.jpg)|![F62](./F62.jpg)|
+|![F63](./F63.jpg)|![F63](./F63.jpg)|
+|![F64](./F64.jpg)|![F64](./F64.jpg)|
+|![F65](./F65.jpg)|![F65](./F65.jpg)|
+|![F66](./F66.jpg)|![F67](./F67.jpg)|
+
+*NOTE：只要不使用Thomas Write Rule规则就可以产生可冲突序列化调度。*
+
+这种协议有饥饿的问题，并且该协议是不可恢复（Not Recoverable）的（因为不能保证时间戳小的事务在时间戳大的事务之前提交），一旦产生abort很可能无法恢复。
+
+|Not Recoverable|
+|-|
+|![F68](./F68.jpg)|
+|![F69](./F69.jpg)|
+|![F70](./F70.jpg)|
+|![F71](./F71.jpg)|
+
+## Optimistic Concurrency Control
+
+![F72](./F72.jpg)
+
+
+
+## Partition-based Timestamp Ordering Protocol
+
 ## Multi-Version Concurrency Control
