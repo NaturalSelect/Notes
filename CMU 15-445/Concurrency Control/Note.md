@@ -457,3 +457,142 @@ Validation的方法有两种：
 在存储过程式事务中，且事务只访问一个分区，这种方式就非常快速，但是存在热点问题。
 
 ## Multi-Version Concurrency Control
+
+DBMS为每一个逻辑上的object维护多个物理版本：
+* 当事务写一个对象时，DBMS为该对象创建一个新的版本。
+* 当事务读一个对象时，DBMS返回当前事务可见的最新的对象。
+* 事务在启动时获取一个唯一的单调时间戳。
+
+*NOTE:MVCC不是一种并发控制协议，而是一种构建系统的方式。*
+
+![F102](./F103.jpg)
+
+近十年出现的DBMS基本都使用了MVCC或者它的变种。
+
+MVCC的好处是：
+* Writers 不会阻塞 Readers。
+* Readers 不会阻塞 Writers。
+* 事务运行在一份数据库snapshot之上。
+* 支持time-travel queries（可以查询数据库前一段时间的状态）。
+* 只有写写冲突需要使用并发控制协议控制。
+
+*NOTE：time-travel queries首先由postgresql提出，但是现在postgresql移除了它（为了支持丢弃老版本）。*
+
+DBMS为每一个tuple维护一个version table。
+
+![F103](./F103.jpg)
+
+version table的字段如下：
+* `version` - 该version的id（唯一且单调递增）。
+* `value` - 该version的value。
+* `begin` - 创建该version的事务的timestamp。
+* `end` - 删除该version的事务的timestamp（可为`-`，表示未被删除）。
+
+transaction table记录当前事务的状态。
+
+![F104](./F104.jpg)
+
+在事务终止时，必须修复事务写入的tuple（恢复到他的旧版本）。
+
+对于读操作，事务只能读取`begin`小于等于`timestamp`且`end`为`-`或大于`timestamp`的version（并且该version必须是已提交的）。
+
+对于写操作，事务写入新version的同时需要把上一个version的`end`设置为当前timestamp。
+
+|Repeatable Read|Write-Write confilct|
+|-|-|
+|![F105](./F105.jpg)|![F110](./F110.jpg)|
+|![F106](./F106.jpg)|![F111](./F111.jpg)|
+|![F107](./F107.jpg)|![F112](./F112.jpg)|
+|![F108](./F108.jpg)|![F113](./F113.jpg)|
+|![F109](./F109.jpg)|![F114](./F114.jpg)|
+|![F116](./F116.jpg)|![F115](./F115.jpg)|
+
+*NOTE：假设使用2PL解决Write-Write confilct。*
+
+## Concurrency Control Protocol
+
+MVCC与并发控制协议分离，可以使用多种并发控制搭配MVCC：
+* Timestamp Ordering。
+* Optimistic Concurrency Control。
+* Two-Phase Locking。
+
+## Version Storage
+
+通常DBMS会使用tuple的pointer field创建一个version chain（version的链表）。
+
+index总是指向该tuple的version chain head。
+
+有三种方式存储version：
+* Append-Only Storage - 最简单的方案，将new version添加到相同的表中。
+
+|Insert A1|Insert A2|
+|-|-|
+|![F117](./F117.jpg)|![F118](./F118.jpg)|
+
+* Time-Travel Storage - 表中只存储tuple的最新版本，老版本存储在一张单独的表中（创建新版本时需要复制整个old tuple）。
+
+|Insert A2|Insert A3|
+|-|-|
+|![F119](./F119.jpg)|![F120](./F120.jpg)|
+
+* Delta Storage - 最佳方案，只将修改过的旧值（一个tuple会有许多修改过的columns）复制到单独的表中。
+
+|Original Table|Insert A2|Insert A3|
+|-|-|-|
+|![F121](./F121.jpg)|![F122](./F122.jpg)|![F123](./F123.jpg)|
+
+## Garbage Collection
+
+共有两种方案：
+* Tuple-Level - 对表进行循序扫描，清除tuple的旧版本。
+* Transaction-Level - 每个事务跟踪它们的读写集，当所有涉及到旧版本的事务结束时，清除旧版本。
+
+Tuple-Level Garbage Collection有两种方式：
+* Background Vacuuming - 使用分离的线程定时执行循序扫描，清除tuple的旧版本（该线程会当前仍在执行的transaction的最小时间戳）。
+
+| | |
+|-|-|
+|![F124](./F124.jpg)|![F125](./F125.jpg)|
+
+可以维护dirty page map加速这个过程，因为被修改过的page一定存在旧版本（但是不一定可回收）。
+
+| | |
+|-|-|
+|![F129](./F129.jpg)|![F130](./F130.jpg)|
+
+* Cooperative Cleaning - 在查询遇上旧版本时，将旧版本清除掉（不适用于从new到old排序的version chain，因为查询找到值之后就不会继续往下找了，所以没用机会清理旧版本）。
+
+| | | |
+|-|-|-|
+|![F126](./F126.jpg)|![F127](./F127.jpg)|![F128](./F128.jpg)|
+
+## Index Management
+
+index总是指向version chain的head，当一个新的version被创建时，需要更新index。
+
+对于primary key index来说（也适用于unique key index），一个tuple的两个version的可能有不同的primary key，当更新primary key时，需要先将旧的version从index中删除，然后再将新的version加入到index中。
+
+![F131](./F113.jpg)
+
+在secondary index中，这个问题更加复杂，我们有两种方案：
+* Logical Pointers - 在index中储存一个固定且唯一的逻辑id而不是primary key，用一个间接层将逻辑id（例如在index中存储primary key的副本）和真正的tuple映射起来（当更新时，只需要更新间接层，而不需要更新每一个index）。
+
+![F134](./F134.jpg)
+
+或者维护一个tuple id到physical address的hash table。
+
+![F135](./F135.jpg)
+
+* Physical Pointers - 直接在index中存储version chain的head（当更新时，需要更新每一个index）。
+
+![F132](./F132.jpg)
+
+*NOTE：对于OLTP数据库来说，一张table上有多个index的情况十分常见。*
+
+![F133](./F133.jpg)
+
+## Implementations
+
+![F136](./F136.jpg)
+
+对于OLTP负载，Mysql和Oracle的MVCC设计是最快的。
