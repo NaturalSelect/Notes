@@ -238,7 +238,7 @@ FOR UPDATE;
 
 *NOTE：同时为了支持2PL，lock manager必须支持锁升级（从S lock升级到X lock）。*
 
-## Strong Strict Two Phase Locking（Rigorous Two Phase Locking）
+## Strong Strict Two Phase Locking（Rigorous Two Phase Locking、SS2PL）
 
 为了处理Cascading Aborts的问题，我们延长Shrinking阶段，直到事务结束再释放锁。
 
