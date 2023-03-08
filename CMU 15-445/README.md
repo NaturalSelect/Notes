@@ -9,5 +9,5 @@
 * [Query Execution](./Query%20Execution/Note.md)
 * [Query Planning & Optimization](./Query%20Planning%20%26%20Optimization/Note.md)
 * [Concurrency Control](./Concurrency%20Control/Note.md)
-* [Database Recovery]()
+* [Database Recovery](./Database%20Recovery/Note.md)
 * [Distributed Database]()
