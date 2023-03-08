@@ -8,6 +8,6 @@
 * [Algorithm](./Algorithm/Note.md)
 * [Query Execution](./Query%20Execution/Note.md)
 * [Query Planning & Optimization](./Query%20Planning%20%26%20Optimization/Note.md)
-* [Concurency Control](./Concurrency%20Control/Note.md)
+* [Concurrency Control](./Concurrency%20Control/Note.md)
 * [Database Recovery]()
 * [Distributed Database]()
