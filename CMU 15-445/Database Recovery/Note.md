@@ -243,3 +243,90 @@ checkpoints是一种截断log file的方式：
 
 ## Recovery With ARIES
 
+![F36](./F36.jpg)
+
+ARIES由三个main ideas组成：
+* Write-Ahead Logging - 使用Steal No-Force策略的预写日志。
+* Repeating History During Redo - 当数据库重启后，首先重放日志中的entry来还原崩溃前的状态。
+* Logging Changes During Undo - 在运行时和恢复时进行undo的时候，也会为undo操作记录日志。
+
+![F37](./F37.jpg)
+
+*NOTE:保证在恢复阶段崩溃时，重启之后能恢复过来。*
+
+## Log Sequence Number（LSN）
+
+*NOTE：通常通过修改buffer pool的方式实现。*
+
+当增加log的时候，为每一个log entry分配唯一且单调递增的log number。
+
+*NOTE：LSN不需要是连续的。*
+
+系统会将一些LSN保存起来。
+
+|Name|Where|Definition|
+|-|-|-|
+|flushedLSN|Memory|磁盘中最大的LSN|
+|pageLSN|page<sub>x</sub>|对页x的最新的一次更新的LSN。|
+|recLSN|page<sub>x</sub>|自上一次flush以来，对页x最老的一次更新的LSN|
+|lastLSN|transaction<sub>i</sub>|事务i最后一次操作的LSN。|
+|MasterRecord|Disk|checkpoint中最大的LSN|
+
+*NOTE：pageLSN和recLSN不需要存到disk中，但是通常会将它们存入到disk中。*
+
+![F39](./F39.jpg)
+
+|flushedLSN|pageLSN|recLSN|MasterRecord|
+|-|-|-|-|
+|![F41](./F41.jpg)|![F40](./F40.jpg)|![F43](./F43.jpg)|![F42](./F42.jpg)|
+
+在page<sub>x</sub>被写入到disk之前，我们必须满足<code>pageLSN<sub>x</sub> <= flushedLSN</code>。
+
+|Safe|Unsafe|
+|-|-|
+|![F44](./F44.jpg)|![F45](./F45.jpg)|
+
+## Normal Commit & Abort Operations
+
+![F46](./F46.jpg)
+
+当事务提交时：
+* 添加一个COMMIT entry到log中，只有当这个entry被持久化之后才能告诉user事务提交完成。
+* 当事务成功提交后，添加一个TX END entry到log中。
+
+*NOTE：在恢复时一旦我们看到TX END，我们将再也看不到关于该事务的任何信息（不需要调用`fsync()`将TX END落盘），它主要在abort时起作用。*
+
+![F52](./F52.jpg)
+
+每一个log entry可以拥有一个prevLSN（不是必须的，但如果可用那么恢复时处理中止会更快），prevLSN构造了一个linked list，记录了该事务写入的上一个entry的LSN。
+
+补偿日志记录（Compensation Log Record，CLR）是撤销事务执行时所写入的更新的日志记录，它会存放一个`before value`和`after value`，同时存在一个`undoNext`指针，存放下一个需要被undo的LSN。
+
+![F56](./F56.jpg)
+
+一个CLR entry跟一个操作entry对应。
+
+|before value & after value|undoNext|
+|-|-|
+|![F57](./F57.jpg)|![F58](./F58.jpg)|
+
+|Normal Commit|Abort|
+|-|-|
+|![F48](./F48.jpg)|![F53](./F53.jpg)|
+|![F49](./F49.jpg)|![F54](./F54.jpg)|
+|![F47](./F47.jpg)|![F60](./F60.jpg)|
+|![F50](./F50.jpg)|![F59](./F59.jpg)|
+|![F51](./F51.jpg)|![F55](./F55.jpg)|
+
+*NOTE：TX END和ABORT entry把abort变成一个二阶段的异步操作，提高了abort的性能（可以立刻向user返回abort而不是等待撤销完成）。*
+
+终止算法：
+1. 写入ABORT entry到log。
+2. 反向遍历该事务的每一个操作entry，对于每一个entry先写入一个CLR到log中，将撤销它的变更。
+3. 写入TX END entry到log。
+
+*NOTE：CLR永远不需要被undo。*
+
+## Fuzzy Checkpoints
+
+## Three Phase Recovery Protocol
