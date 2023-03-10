@@ -6,6 +6,6 @@
 
 ## Guide
 
-[CMU 15-445 Intro to Database System](./CMU%2015-445/README.md)
-[MIT 6.S081 Operation System](./MIT%206.S081/README.md)
-[MIT 6.824 Distributed System](./MIT%206.824/README.md)
+* [CMU 15-445 Intro to Database System](./CMU%2015-445/README.md)
+* [MIT 6.S081 Operation System](./MIT%206.S081/README.md)
+* [MIT 6.824 Distributed System](./MIT%206.824/README.md)
