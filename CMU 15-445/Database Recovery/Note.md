@@ -241,3 +241,5 @@ checkpoints是一种截断log file的方式：
 * 每过一段时间记录一次checkpoint。
 * 当log积攒到一定数量时记录一次checkpoint - 更好。
 
+## Recovery With ARIES
+
