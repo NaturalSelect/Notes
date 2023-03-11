@@ -282,6 +282,8 @@ ARIES由三个main ideas组成：
 
 在page<sub>x</sub>被写入到disk之前，我们必须满足<code>pageLSN<sub>x</sub> <= flushedLSN</code>。
 
+在page落盘之后，recLSN和pageLSN都被清除。
+
 |Safe|Unsafe|
 |-|-|
 |![F44](./F44.jpg)|![F45](./F45.jpg)|
@@ -329,4 +331,98 @@ ARIES由三个main ideas组成：
 
 ## Fuzzy Checkpoints
 
+对于一个non-fuzzy checkpoint来说，它需要暂停所有事务才能制作checkpoint，制作完成之后再让事务继续运行。
+
+|Stop Transactions|Make Checkpoint|Continue|
+|-|-|-|
+|![F61](./F61.jpg)|![F62](./F62.jpg)|![F63](./F63.jpg)|
+
+为了支持fuzzy checkpoints，我们需要将以下数据保存到checkpoint中：
+* Active Transaction Table（ATT）。
+* Dirty Page Table（DPT）。
+
+当我们开始制作checkpoints时，需要拷贝ATT和DPT。
+
+在制作完成后，把它们与checkpoint end一同写出。
+
+ATT记录每一个事务的以下信息：
+* txnId - 事务的唯一id。
+* status - 事务的状态（R、C、U）。
+* lastLSN - 最后一次操作的LSN。。
+
+![F64](./F64.jpg)
+
+当一个事务结束（写出TX-END），它将会被移除出ATT。
+
+dirty page table跟踪buffer pool中的所有脏页。
+
+![F65](./F65.jpg)
+
+fuzzy checkpoints使用两张新的log entry来记录checkpoint的边界：
+* CHECKPOINT-BEGIN - 表明checkpoint制作开始。
+* CHECKPOINT-END - 包含ATT和DPT表示checkpoint制作完成（即成功将所有的dirty page落盘）。
+
+|CHECKPOINT-BEGIN|CHECKPOINT-END
+|-|-|
+|![F66](./F66.jpg)|![F67](./F67.jpg)|
+
+当我们制作checkpoint完成，就修改MasterRecord指向最新的CHECKPOINT-BEGIN（帮助我们在恢复的时候快速找到checkpoint）。
+
 ## Three Phase Recovery Protocol
+
+Recovery分为三个阶段：
+* Analysis - 读取WAL的最后一个checkpoint（通过MasterRecord可以很容易做到），恢复崩溃时的DPT和ATT，并扫描到WAL的尾部。
+* Redo - 从一个特定的位置（DPT中recLSN的最小值）开始，重放WAL直到WAL末尾（即使是终止的事务也被重放）。
+* Undo - 从WAL的末尾开始以相反的顺序undo所有终止和未提交的事务，直到ATT中所有的事务都被undo。
+
+|Recovery|
+|-|
+|![F68](./F68.jpg)|
+|![F69](./F69.jpg)|
+|![F70](./F70.jpg)|
+|![F71](./F71.jpg)|
+|![F72](./F72.jpg)|
+
+在Analysis发现事务的TX-END entry或COMMIT entry，就把事务从ATT中移除。
+
+对于任何一个update entry，我们需要查看它update的page是否在DPT中，如果不是，则添加到DPT中，设置page的recLSN为当前LSN。
+
+|Analysis|
+|-|
+|![F73](./F73.jpg)|
+|![F74](./F74.jpg)|
+|![F75](./F75.jpg)|
+|![F76](./F76.jpg)|
+|![F77](./F77.jpg)|
+|![F78](./F78.jpg)|
+
+redo将从DPT中recLSN的最小值处开始redo所有操作直到遇到WAL的末尾。
+
+对于redo操作：
+* 重放log entry。
+* 将修改的page的pageLSN（和recLSN）设置为log entry的LSN（与transaction执行时所作的操作一致）。
+* 不需要写入新的log entry到WAL，也不需要强制page落盘。
+
+遇到TX-END entry之后，将transaction从ATT中移除（并可以将该事务修改的dirty page落盘）。
+
+在redo阶段的之后，为所有C状态的事务，写入一个TX-END entry到WAL中。
+
+undo所有仍在ATT中的事务（这些事务的状态一定是U），从WAL的末尾（实际上是ATT中最大的lastLSN）开始直到ATT中所有的事务都被undo。
+
+我们将通过事务的lastLSN进行跳转（每次都跳到最大的lastLSN），每进行一次undo就要在WAL中写入一条CLR entry（利用CLR entry，如果在undo阶段崩溃，恢复之后的redo会重做我们已经做的undo）。
+
+*NOTE：在undo阶段，我们可以通过CLR的undoNext进行跳转（仅当没有其他lastLSN比它更大的时候），因此CLR entry被undo阶段特殊对待，它将被忽略（因为redo已经重做了撤销）。*
+
+当完全undo一个事务时，向WAL中写入一条TX-END entry，并将WAL和dirty page都落盘。
+
+|Undo|
+|-|
+|![F79](./F79.jpg)|
+|![F80](./F80.jpg)|
+|![F81](./F81.jpg)|
+|![F82](./F82.jpg)|
+|![F83](./F83.jpg)|
+|![F84](./F84.jpg)|
+|![F85](./F85.jpg)|
+|![F86](./F86.jpg)|
+|![F87](./F87.jpg)|
