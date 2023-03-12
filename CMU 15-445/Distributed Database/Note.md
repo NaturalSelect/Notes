@@ -110,5 +110,9 @@ Distributed Transaction（分布式事务）指那些访问多个partition的tra
 
 ## Distributed OLTP Database
 
+## Replication
+
+## CAP Theorem
+
 ## Distributed OLAP Database
 
