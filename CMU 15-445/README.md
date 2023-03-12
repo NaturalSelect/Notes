@@ -10,4 +10,4 @@
 * [Query Planning & Optimization](./Query%20Planning%20%26%20Optimization/Note.md)
 * [Concurrency Control](./Concurrency%20Control/Note.md)
 * [Database Recovery](./Database%20Recovery/Note.md)
-* [Distributed Database]()
+* [Distributed Database](./Distributed%20Database/Note.md)
