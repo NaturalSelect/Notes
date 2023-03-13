@@ -22,7 +22,7 @@ Shared Disk系统通常只需要添加一个无状态的worker node就能完成�
 
 但在update时，将产生一致性问题，更新者必须通知其他worker node。
 
-|Update Produce|
+|Update Procedure|
 |-|
 |![F8](./F8.jpg)|
 |![F9](./F9.jpg)|
