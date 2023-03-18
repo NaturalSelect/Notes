@@ -255,7 +255,7 @@ Star Schema vs Snowflake Schema：
 
 ## Query Fault Tolerance
 
-大部分分布式OLAP DBMS不会进行查询容错，当执行查询的节点崩溃，终止查询并返回错误（因为保存查询产生的临时数据的成本非常高）。
+大部分（shared nothing）分布式OLAP DBMS不会进行查询容错，当执行查询的节点崩溃，终止查询并返回错误（因为保存查询产生的临时数据的成本非常高）。
 
 容错需要将operator产生的临时数据写到一个所有节点都能访问的位置上（典型地是写入shared disk或者传给replica）。
 
@@ -315,6 +315,40 @@ JOIN S ON R.id = S.id
 |-|![F117](./F117.jpg)|
 
 *NOTE：如果单个分区无法放入单个节点时，查询终止。*
+
+某些DBMS支持Semi-Join（对只需要外表返回的查询进行优化）。
+
+例如：
+```sql
+SELECT R.id FROM R
+ LEFT OUTER JOIN S
+   ON R.id = S.id
+WHERE R.id IS NOT NULL
+```
+
+不会发生实际上的join操作，而是检查存不存在对于id的S tuple，将它重写成：
+```sql
+SELECT R.id FROM R
+WHERE EXISTS (
+    SELECT 1 FROM S
+    WHERE R.id = S.id
+)
+```
+
+为了执行这个操作，只需要发送R.id。
+
+|Semi-Join|
+|-|
+|![F118](./F118.jpg)|
+|![F119](./F119.jpg)|
+
+某些DBMS还会提高Semi-Join的关键字（该keyword非SQL标准，通常需要使用`EXISTS`依靠查询优化器来进行semi-join）。
+
+```sql
+SELECT R.id FROM R
+SEMI JOIN S 
+ON R.id = S.id 
+```
 
 ## Cloud Systems
 
