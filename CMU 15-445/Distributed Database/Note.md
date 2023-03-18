@@ -352,3 +352,13 @@ ON R.id = S.id
 
 ## Cloud Systems
 
+云提供者会提高一种叫database-as-a-service（DBaaS）的服务，将DBMS开放给租户。
+
+租户无需关心如何进行容错和冗余。
+
+*NOTE：目前shared disk和shared nothing的界限正在变得模糊，某些shared disk提供者提供了事务接口给DBMS设计者。*
+
+Cloud Database Systems可以分为几种：
+* Managed DBMSs - 托管数据库，指使用现成的数据库软件运行在云上（大多数云数据库都是这种类型）。
+* Clound-Native DBMSs - 云原生数据库，为了在云环境下运行而设计的数据库（通常使用shared disk架构）。
+* Serverless DBMSs - 使用shared disk架构，租户在空闲时无需付费，只在执行查询时进行计费。
