@@ -285,6 +285,36 @@ Star Schema vs Snowflake Schema：
 
 ## Distributed Join Algorithms
 
+对于查询：
 
+```sql
+SELECT * FROM R
+JOIN S ON R.id = S.id
+```
+
+一共存在四种情况：
+* 表S被复制到所有节点，而表R被分区。
+* 表S和表R以相同的字段分区，分区的字段是我们进行join的字段。
+* 表S和表R以不同的字段分区，表R的分区的字段是我们进行join的字段 - Broadcast Join算法，先将表S复制到每一个节点再执行join。
+* 表S和表R以不同（或相同）的字段分区，但是分区的字段不是我们进行join的字段 - Shuffle Join算法（又叫Shuffle Hash Join算法），将表S和R进行重新分区后执行join。
+
+|Replicated Table|Same Field Partitoning|
+|-|-|
+|![F100](./F100.jpg)|![F103](./F103.jpg)|
+|![F101](./F101.jpg)|![F104](./F104.jpg)|
+|![F102](./F102.jpg)|![F105](./F105.jpg)|
+
+|Broadcast Join|Shuffle Join|
+|-|-|
+|![F106](./F106.jpg)|![F111](./F111.jpg)|
+|![F107](./F107.jpg)|![F112](./F112.jpg)|
+|![F108](./F108.jpg)|![F113](./F113.jpg)|
+|![F109](./F109.jpg)|![F114](./F114.jpg)|
+|![F110](./F110.jpg)|![F115](./F115.jpg)|
+|-|![F116](./F116.jpg)|
+|-|![F117](./F117.jpg)|
+
+*NOTE：如果单个分区无法放入单个节点时，查询终止。*
 
 ## Cloud Systems
+
