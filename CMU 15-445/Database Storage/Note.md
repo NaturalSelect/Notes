@@ -221,7 +221,7 @@ Workloads:
 * 点查（point queries）很慢。
 * 插入，更新，删除很慢，因为拆分了tuple。
 
-## ETL
+## ETL（提取、转换、加载）
 
 ETL 从前端OLTP数据孤岛中提取数据，进行数据清洗然后传入后端的OLAP数据仓库，运行分析，然后传回前端OLTP数据库。
 

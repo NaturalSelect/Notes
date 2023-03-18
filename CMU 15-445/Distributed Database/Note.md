@@ -197,7 +197,7 @@ K-Safety指当对象的副本数量低于某个指时判断系统为可不用，
 ## CAP Theorem
 
 一个系统不可能同时拥有CAP特性：
-* Consistency - 副本间维持一致（即使线性化）。
+* Consistency - 副本间维持一致（即线性化）。
 * Always Available - 永远可用。
 * Network Partition Tolerant - 网络分区容忍。
 
@@ -218,3 +218,73 @@ Federated Databases（异构联合数据库）指哪些每个节点上运行的D
 ## Distributed OLAP Database
 
 ![F45](./F45.jpg)
+
+OLAP数据库（也叫数据仓库，data warehouse）通常通过ETL从OLTP数据孤岛中提取数据。
+
+![F84](./F84.jpg)
+
+有两种方式对OLAP数据库建模：
+* Star Schema - 将table分为fact table和dimension tables，一个fact table保存了所有的event而dimension tables记录了event的详细信息，fact table中存在执行dimension tables的外键，并且只能拥有一层dimension tables。
+* Snowflake Schema - 与Star Schema类似但dimension tables允许出现多层。
+
+*NOTE：某些数据库只支持Star Schema。*
+
+|Star Schema|Snowflake Schema|
+|-|-|
+|![F85](./F85.jpg)|![F86](./F86.jpg)|
+
+Star Schema vs Snowflake Schema：
+* Star Schema查询时需要的join更少（这意味着它更快），但非规范化的数据可能引起一致性问题（因为我们会存储本该规范化到其他表中的冗余信息）。
+* Snowflake Schema查询时需要的join更多，但不存在非规范化数据的问题。
+
+## Execution Models
+
+执行查询的方式有两种：
+* Push Query To Data - 将查询或查询的片段发送到数据所在的地方，在该节点上执行查询（能够进行早期过滤减少网络消息量并且有更好的并行性）然后返还结果给base节点（home节点）。
+* Pull Data To Query - 从数据所在的节点中拉取需要查询的数据（常见于shared disk系统，因为这种系统能够避免它的缺点）。
+
+*NOTE：base节点是该查询的协调者。*
+
+*NOTE：在shared disk的系统中push和pull的边界很模糊，shared disk通常会暴露一个支持谓词下推的接口来减少数据量。*
+
+|Push Query To Data（Shared Nothing）|Pull Data To Query（Shared Disk）|Pull Data To Query（Stuipd）|
+|-|-|
+|![F87](./F87.jpg)|![F90](./F90.jpg)|![F93](./F93.jpg)|
+|![F88](./F88.jpg)|![F91](./F91.jpg)|![F94](./F94.jpg)|
+|![F89](./F89.jpg)|![F92](./F92.jpg)|-|
+
+## Query Fault Tolerance
+
+大部分分布式OLAP DBMS不会进行查询容错，当执行查询的节点崩溃，终止查询并返回错误（因为保存查询产生的临时数据的成本非常高）。
+
+容错需要将operator产生的临时数据写到一个所有节点都能访问的位置上（典型地是写入shared disk或者传给replica）。
+
+*NOTE：MapReduce和Hadoop进行容错是因为它们默认跑在廉价机器的集群上。*
+
+某些系统可以手动设置以进行容错（大部分系统不会默认打开容错）。
+
+|Query Fault Tolerance（Shared Disk）|
+|-|
+|![F95](./F95.jpg)|
+|![F96](./F96.jpg)|
+|![F97](./F97.jpg)|
+|![F98](./F98.jpg)|
+
+## Query Planning
+
+在分布式环境中执行的优化有三种：
+* Predicate Pushdown - 谓词下推。
+* Early Projections - 提前映射。
+* Optimal Join Orderings。
+
+将Query发送给节点的方式：
+* Physical Operators - 协调者通过查询优化器生成用于全局的查询计划，将计划的物理操作片段发送到其他节点上，其他节点收到后立即执行（不管操作在当前节点上执行是否是最优的），然后发送结果（目前大多数DBMS使用这种方式）。
+* SQL - 协调者在获取SQL之后为每一个分区重写成适合该分区执行的SQL语句，然后发送给各个分区（允许每个分区各自进行查询优化），各个分区执行完后返回结果（只有MemSQL使用了这种方式）。
+
+![F99](./F99.jpg)
+
+## Distributed Join Algorithms
+
+
+
+## Cloud Systems
