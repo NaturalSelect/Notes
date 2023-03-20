@@ -248,7 +248,7 @@ Star Schema vs Snowflake Schema：
 *NOTE：在shared disk的系统中push和pull的边界很模糊，shared disk通常会暴露一个支持谓词下推的接口来减少数据量。*
 
 |Push Query To Data（Shared Nothing）|Pull Data To Query（Shared Disk）|Pull Data To Query（Stuipd）|
-|-|-|
+|-|-|-|
 |![F87](./F87.jpg)|![F90](./F90.jpg)|![F93](./F93.jpg)|
 |![F88](./F88.jpg)|![F91](./F91.jpg)|![F94](./F94.jpg)|
 |![F89](./F89.jpg)|![F92](./F92.jpg)|-|
