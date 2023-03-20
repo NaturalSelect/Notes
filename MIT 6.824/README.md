@@ -1,8 +1,8 @@
 # Guide
 
 * [MapReduce](./MapReduce/Note.md)
-* Google File System
-* Primary-Backup Replication
+* [Google File System](./Google%20File%20System/Note.md)
+* [Primary-Backup Replication](./Primary-Backup%20Replication/Note.md)
 * Raft
 * Zookeeper
 * CRAQ
