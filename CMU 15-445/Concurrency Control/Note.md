@@ -476,6 +476,8 @@ MVCC的好处是：
 * 支持time-travel queries（可以查询数据库前一段时间的状态）。
 * 只有写写冲突需要使用并发控制协议控制。
 
+*NOTE:实际上只有读写事务和写事务都要运行并发控制协议（详见《数据库系统概念》中的“多版本时间戳排序”和“多版本两阶段封锁”）。*
+
 *NOTE：time-travel queries首先由postgresql提出，但是现在postgresql移除了它（为了支持丢弃老版本）。*
 
 DBMS为每一个tuple维护一个version table。
