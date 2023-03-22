@@ -378,7 +378,7 @@ DBMS通过某种方式为每一个事务分配唯一的时间戳，以此来预�
 ![F72](./F72.jpg)
 
 OCC的写入由多个阶段组成：
-* Read Phase - 跟踪每一个事务的读取和写入，并把写入存储在private space中。
+* Read Phase - 跟踪每一个事务的读取和写入，并存储在private space中。
 * Validation Phase - 事务提交时，验证是否与其他事务冲突。
 * Write Phase - 如果验证成功，将更改应用到数据库中，否则重启事务。
 
