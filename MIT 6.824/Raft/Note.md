@@ -13,8 +13,8 @@ majority vote解决了脑裂的问题（因为整个集群只能有一个majorit
 其中`n`是集群的机器数量，对于raft如果有`2f + 1`个机器，可以承受`f`个机器故障而不失去可用性。
 
 赢得选举的要求：
-* 节点在majority中具有最长的log。
-* 节点的最后一个log最新或和majority中的其他节点一样新（即term最大）。
+* 节点在可用的majority中具有最长的log。
+* 节点的最后一个log最新或和可用的majority中的其他节点一样新（即term最大）。
 
 对于每一个term：
 * 要么存在一个leader。
