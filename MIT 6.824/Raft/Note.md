@@ -43,10 +43,10 @@ Leader处理不一致是通过强制跟随者直接复制自己的日志来解�
 的日志条目会被Leader的日志覆盖。要使得跟随者的日志进入和自己一致的状态，Leader必须找到最后两者达成一致的地方，然后删除从那个点之后的所有日志条目，发送自己的日志给跟随者。所有的这些操作都在进行附加日志 RPCs 的一致性检查时完成。
 
 对于每一个节点，leader维护了：
-* matchIndex - 该节点与leader同步的log的index。
-* nextIndex - 下一个应该向该节点发生的log的index。
+* `matchIndex` - 该节点与leader同步的log的index。
+* `nextIndex` - 下一个应该向该节点发生的log的index。
 
-如果一个跟随者的日志和Leader不一致，那么在下一次的附加日志 RPC 时的一致性检查就会失败。在被跟随者拒绝之后，Leader就会减小 nextIndex 值并进行重试。最终 nextIndex 会在某个位置使得Leader和跟随者的日志达成一致。
+如果一个跟随者的日志和Leader不一致，那么在下一次的附加日志 RPC 时的一致性检查就会失败。在被跟随者拒绝之后，Leader就会减小 `nextIndex` 值并进行重试。最终 `nextIndex` 会在某个位置使得Leader和跟随者的日志达成一致。
 
 一旦log被复制到majority（即commit），leader就可以回复client向client做出持久化承诺，而不需要等到其余慢速的replicas（称为“半同步复制”）。
 
