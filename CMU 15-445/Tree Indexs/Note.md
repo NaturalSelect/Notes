@@ -147,7 +147,7 @@ B-Tree vs B+Tree：
 
 | | | |
 |-|-|-|
-|![F88](./F88.jpg)|⇨|![F89](./F89.jpg|
+|![F88](./F88.jpg)|⇨|![F89](./F89.jpg)|
 
 获得read latch之后释放原来的read latch扫描下一个node。
 
