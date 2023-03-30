@@ -58,6 +58,8 @@ Leader处理不一致是通过强制跟随者直接复制自己的日志来解�
 * 当Leader失败后，新的Leader不一定具有与原Leader相同的快照。
 * 当Follower失败后，Leader没有手段判断出Follower接收快照的进度（无法区分是chunk被接收，回复丢失；还是chunk丢失）。
 
+*NOTE：在实践中实现这种trick的难度也非常大。*
+
 ## Linearizability
 
 Linearizability（线性化）指分布式系统表现得如同单机，即强一致性。
