@@ -131,8 +131,6 @@ leader可以收集一段时间的entries，再一次性地复制给follower以�
 
 当附加日志 RPC 的请求被拒绝的时候，跟随者可以包含自己的Commit Index（以Last Appiled进行初始化）在response中返回给leader。
 
-*NOTE：这种trick只能在磁盘状态机中使用（或者保存了Last Appiled的状态机中使用）。*
-
 ### Conflict Index In Append Entires Response
 
 当附加日志 RPC 的请求被拒绝的时候，跟随者可以包含冲突的条目的任期号和自己存储的那个任期的最早的索引地址。借助这些信息，Leader可以减小 nextIndex 越过所有那个任期冲突的所有日志条目；这样就变成每个任期需要一次附加条目 RPC而不是每个条目一次。
