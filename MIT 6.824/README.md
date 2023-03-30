@@ -3,7 +3,7 @@
 * [MapReduce](./MapReduce/Note.md)
 * [Google File System](./Google%20File%20System/Note.md)
 * [Primary-Backup Replication](./Primary-Backup%20Replication/Note.md)
-* Raft
+* [Raft](./Raft/Note.md)
 * Zookeeper
 * CRAQ
 * Aurora

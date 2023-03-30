@@ -50,7 +50,25 @@ Leader处理不一致是通过强制跟随者直接复制自己的日志来解�
 
 一旦log被复制到majority（即commit），leader就可以回复client向client做出持久化承诺，而不需要等到其余慢速的replicas（称为“半同步复制”）。
 
+随着越来越多的客户请求，Raft 的日志在正常运行期间会不断增长。随着它变得越来越大，它会占用更多的空间，同时也需要更多的时间来回放。如果没有压缩日志的方法，最终将导致可用性问题：即服务器存储空间不足，或者启动时间太长。因此，任何实际系统都需要某种形式的日志压缩，一旦状态机完成了快照的写入，就可以将日志截断。
+
+当Follower过于落后时，快照取代Log被发送到Follower上。
+
+然而快照的断点续传是不可能的：
+* 当Leader失败后，新的Leader不一定具有与原Leader相同的快照。
+* 当Follower失败后，Leader没有手段判断出Follower接收快照的进度（无法区分是chunk被接收，回复丢失；还是chunk丢失）。
+
 ## Linearizability
+
+Linearizability（线性化）指分布式系统表现得如同单机，即强一致性。
+
+要实现Linearizability，对于Write操作：
+* 为每一个Client的请求进行独立的编号，以过滤重复的请求。
+* 编码必须同步到Replicas上。
+
+对于Read操作：
+* Leader只在Append Entries发送到Majority成功时，提供读取操作。
+* 或者每一次读取都进行Logging。
 
 ## Change Membership
 
