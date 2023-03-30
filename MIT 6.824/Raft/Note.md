@@ -129,9 +129,9 @@ leader可以收集一段时间的entries，再一次性地复制给follower以�
 
 ### Commit Index In Append Entires Response
 
-当附加日志 RPC 的请求被拒绝的时候，跟随者可以包含自己的Commit Index（以last appiled进行初始化）在response中返回给leader。
+当附加日志 RPC 的请求被拒绝的时候，跟随者可以包含自己的Commit Index（以Last Appiled进行初始化）在response中返回给leader。
 
-*NOTE：这种trick只能在磁盘状态机中使用。*
+*NOTE：这种trick只能在磁盘状态机中使用（或者保存了Last Appiled的状态机中使用）。*
 
 ### Conflict Index In Append Entires Response
 
