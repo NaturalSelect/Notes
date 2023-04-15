@@ -109,5 +109,56 @@ extent 文件具有两种类型：
 
 ![F12](./F12.jpg)
 
+磁盘加载完挂载目录下所有的数据分区后，启动后台任务（间隔1分钟）：
+* 对Normal数据分区中的ExtentInfo按照ExtentId进行排序，对满足要求的Extent进行CRC checksum计算，同时清除在ExtentInfo缓存中被标记为过期的数据。
+* 清理ExtentStore中已删除数据分区的过期缓存。
+
+![F20](./F20.jpg)
+
 ### Data Partition Load
 
+![F13](./F13.jpg)
+
+进行数据分区加载时：
+1. 先从磁盘中加载所有数据分区。
+2. 然后通过资源管理器进行比对。
+3. 不在资源管理器中的数据分区则为一个过期的数据分区。
+4. 过期的数据分区会在后台进行删除。
+
+![F14](./F14.jpg)
+
+|数据分区|数据分区元数据|
+|-|-|
+|![F16](./F16.jpg)|![F15](./F15.jpg)|
+|![F17](./F17.jpg)|-|
+
+加载数据分区本质上是加载数据分区的元数据。
+
+|加载数据分区|创建数据分区|
+|-|-|
+|![F18](./F18.jpg)|![F19](./F19.jpg)|
+
+在加载数据分区的过程中会创建几个后台任务：
+* statusUpdateScheduler。
+* startEvict - 只处理`PartitionTypeCache`类型的数据分区，对数据分区中过期的 extent 进行删除。
+* startRaftLoggingSchedule - 在数据分区的Raft启动后定期将appiled index落盘（间隔10秒）并进行Raft日志截断（间隔1分钟）。
+
+其中 statusUpdateScheduler 执行三个任务：
+* LaunchRepair - 间隔一分钟执行 extent 修复（仅leader节点），非Normal数据分区只进行TinyExtent的修复，而Normal数据分区执行TinyExtent和NormalExtent的修复。
+* statusUpdate - 间隔一分钟更新数据分区的空间使用量和状态，若数据分区使用的空间超过了阈值（或NormalExtent的数量超过了20000个），则将数据分区设置为只读。
+* ReloadSnapshot - 间隔5分钟保存数据分区上的所有 extents 的快照。
+
+在数据分区加载（或创建）完成后，会启动Raft：
+* 对于正常创建的数据分区，直接启动Raft。
+* 对于修复任务创建的数据分区，等待修复任务完成后启动Raft（除非本节点为leader节点，直接启动Raft）。
+
+### Computing CRC Checksum
+
+对 extent 计算CRC Checksum需要满足一定条件：
+* 该 extent 为 NormalExtent。
+* 它的修改时间超过了CRC更新间隔（10分钟）。
+* 文件大小大于0。
+* 没有被标记为删除。
+* 已经没有计算过CRC值。
+
+![F21](./F21.jpg)
