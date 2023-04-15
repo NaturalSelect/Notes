@@ -165,6 +165,25 @@ extent 文件具有两种类型：
 
 ![F24](./F24.jpg)
 
+### Computing CRC Checksum
+
+对 extent 计算CRC Checksum需要满足一定条件：
+* 该 extent 为 NormalExtent。
+* 它的修改时间超过了CRC更新间隔（10分钟）。
+* 文件大小大于0。
+* 没有被标记为删除。
+* 已经没有计算过CRC值。
+
+![F21](./F21.jpg)
+
+在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的头部中。
+
+然后将计算出来的checksum 聚合在一起再进行一次计算。
+
+![F22](./F22.jpg)
+
+每一个 extent 的checksum会保存在该 extent 的ExtentInfo中。
+
 ### Extent Store
 
 ![F35](./F35.jpg)
@@ -189,27 +208,6 @@ ExtentStore初始化：
 |Extent|ExtentInfo|
 |-|-|
 |![F25](./F25.jpg)|![F26](./F26.jpg)|
-
-## Ssystem Behavior
-
-### Computing CRC Checksum
-
-对 extent 计算CRC Checksum需要满足一定条件：
-* 该 extent 为 NormalExtent。
-* 它的修改时间超过了CRC更新间隔（10分钟）。
-* 文件大小大于0。
-* 没有被标记为删除。
-* 已经没有计算过CRC值。
-
-![F21](./F21.jpg)
-
-在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的头部中。
-
-然后将计算出来的checksum 聚合在一起再进行一次计算。
-
-![F22](./F22.jpg)
-
-每一个 extent 的checksum会保存在该 extent 的ExtentInfo中。
 
 ### Partition Creation
 
