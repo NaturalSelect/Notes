@@ -190,6 +190,8 @@ ExtentStore初始化：
 |-|-|
 |![F25](./F25.jpg)|![F26](./F26.jpg)|
 
+## Ssystem Behavior
+
 ### Computing CRC Checksum
 
 对 extent 计算CRC Checksum需要满足一定条件：
