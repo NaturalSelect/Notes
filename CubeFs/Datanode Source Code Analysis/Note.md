@@ -165,6 +165,31 @@ extent 文件具有两种类型：
 
 ![F24](./F24.jpg)
 
+### Extent Store
+
+![F35](./F35.jpg)
+
+每个数据分区加载或创建时都会创建一个ExtentStore来管理分区内的 extents。
+
+|Extent Store|
+|-|
+|![F33](./F33.jpg)|
+|![F34](./F34.jpg)|
+
+ExtentStore初始化：
+1. 对数据分区目录下的各个文件进行校验，如果不存在则创建。
+2. 初始化baseExtentId，表示目前正在使用的最大 extent id（最小值和初始值都为`1024`），并加载目录下的 extents，边加载边递增 extent id。
+3. 读取EXTENT_META文件的已分配的extent id的最大值，放入`hasAllocSpaceExtentIDOnVerifyFile`中。
+4. 读取TinyExtents（`1`~`64`），如果 extent 文件不存在则创建文件（但不分配大小），初始化小文件信息。
+
+加载extent 文件：
+1. 读取 extent 文件信息构造 Extent 结构，并添加到cache缓存中。
+2. 根据Extent结构构造ExtentInfo结构，并添加到extentInfoMap缓存中。
+
+|Extent|ExtentInfo|
+|-|-|
+|![F25](./F25.jpg)|![F26](./F26.jpg)|
+
 ### Computing CRC Checksum
 
 对 extent 计算CRC Checksum需要满足一定条件：
@@ -201,28 +226,3 @@ extent 文件具有两种类型：
 ### Primary-backup Replication
 
 ![F32](./F32.jpg)
-
-### Extent Store
-
-![F35](./F35.jpg)
-
-每个数据分区加载或创建时都会创建一个ExtentStore来管理分区内的 extents。
-
-|Extent Store|
-|-|
-|![F33](./F33.jpg)|
-|![F34](./F34.jpg)|
-
-ExtentStore初始化：
-1. 对数据分区目录下的各个文件进行校验，如果不存在则创建。
-2. 初始化baseExtentId，表示目前正在使用的最大 extent id（最小值和初始值都为`1024`），并加载目录下的 extents，边加载边递增 extent id。
-3. 读取EXTENT_META文件的已分配的extent id的最大值，放入`hasAllocSpaceExtentIDOnVerifyFile`中。
-4. 读取TinyExtents（`1`~`64`），如果 extent 文件不存在则创建文件（但不分配大小），初始化小文件信息。
-
-加载extent 文件：
-1. 读取 extent 文件信息构造 Extent 结构，并添加到cache缓存中。
-2. 根据Extent结构构造ExtentInfo结构，并添加到extentInfoMap缓存中。
-
-|Extent|ExtentInfo|
-|-|-|
-|![F25](./F25.jpg)|![F26](./F26.jpg)|
