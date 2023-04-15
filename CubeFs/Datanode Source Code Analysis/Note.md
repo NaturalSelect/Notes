@@ -115,6 +115,13 @@ extent 文件具有两种类型：
 
 ![F20](./F20.jpg)
 
+当 extent 被删除后：
+1. 先删除物理 extent 文件。
+2. 修改对应的ExtentInfo。
+3. 将其 extent id 放入`hasDeleteNormalExtentsCache`中。
+
+![F23](./F23.jpg)
+
 ### Data Partition Load
 
 ![F13](./F13.jpg)
@@ -152,6 +159,12 @@ extent 文件具有两种类型：
 * 对于正常创建的数据分区，直接启动Raft。
 * 对于修复任务创建的数据分区，等待修复任务完成后启动Raft（除非本节点为leader节点，直接启动Raft）。
 
+当所有的磁盘上所有的数据分区都加载完成后，节点会与资源管理器对比数据分区信息找出缺失的数据分区：
+1. 向资源管理器发起`GetDataNode`请求，获取资源管理器记录的当前节点的所有数据分区的Id。
+2. 检查是否所有的Id都已经被注册到空间管理器中，若没有则打印缺失的数据分区日志。
+
+![F24](./F24.jpg)
+
 ### Computing CRC Checksum
 
 对 extent 计算CRC Checksum需要满足一定条件：
@@ -162,3 +175,14 @@ extent 文件具有两种类型：
 * 已经没有计算过CRC值。
 
 ![F21](./F21.jpg)
+
+在计算CRC Checksum时，先对 extent 中的各个块进行计算。
+
+然后将计算出来的checksum 聚合在一起再进行一次计算。
+
+![F22](./F22.jpg)
+
+每一个 extent 的checksum会保存在该 extent 的头部。
+
+### Extent Store
+
