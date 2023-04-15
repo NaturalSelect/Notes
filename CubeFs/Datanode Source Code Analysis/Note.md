@@ -66,8 +66,8 @@
 其中：
 * `1` - `100` 为该数据分区存储的 extents 文件，文件名就是 extent 的 id。
 * APPLY - 记录数据分区当前的Raft `AppiledIndex`的值。
-* EXTENT_CRC - 记录每一个 extent 的 checksum。
-* EXTENT_META - 前`8`个字节记录正在使用的最大的 extent id，后`8`个字节记录已经分配的 extent id的最大值。
+* EXTENT_CRC - 按序记录每一个 extent 的 checksum（每一个 extent 占用`4096`字节）。
+* EXTENT_META - 前`8`个字节记录正在使用的最大的 extent id，后`8`个字节记录已经分配的 extent id的最大值，一次分配将分配`1000`个id，并且每次分配需要在`EXTENT_CRC`中分配`1000 * 4096`字节的存储空间存放 extent 的checksum。
 * META - 记录数据分区的元数据信息。
 * NORMALEXTENT_DELETE - 记录被删除的 extent id。
 * TINYEXTENT_DELETE - 记录被删除的extent 信息（`|ExtentId|offset|size|`，每条24字节）。
@@ -176,13 +176,53 @@ extent 文件具有两种类型：
 
 ![F21](./F21.jpg)
 
-在计算CRC Checksum时，先对 extent 中的各个块进行计算。
+在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的头部中。
 
 然后将计算出来的checksum 聚合在一起再进行一次计算。
 
 ![F22](./F22.jpg)
 
-每一个 extent 的checksum会保存在该 extent 的头部。
+每一个 extent 的checksum会保存在该 extent 的ExtentInfo中。
+
+### Partition Creation
+
+![F27](./F27.jpg)
+
+|CreatePartition|CreateDataPartition|
+|-|-|
+|![F28](./F28.jpg)|![F29](./F29.jpg)|
+
+### Partition Deletion
+
+![F30](./F30.jpg)
+
+![F31](./F31.jpg)
+
+### Primary-backup Replication
+
+![F32](./F32.jpg)
 
 ### Extent Store
 
+![F35](./F35.jpg)
+
+每个数据分区加载或创建时都会创建一个ExtentStore来管理分区内的 extents。
+
+|Extent Store|
+|-|
+|![F33](./F33.jpg)|
+|![F34](./F34.jpg)|
+
+ExtentStore初始化：
+1. 对数据分区目录下的各个文件进行校验，如果不存在则创建。
+2. 初始化baseExtentId，表示目前正在使用的最大 extent id（最小值和初始值都为`1024`），并加载目录下的 extents，边加载边递增 extent id。
+3. 读取EXTENT_META文件的已分配的extent id的最大值，放入`hasAllocSpaceExtentIDOnVerifyFile`中。
+4. 读取TinyExtents（`1`~`64`），如果 extent 文件不存在则创建文件（但不分配大小），初始化小文件信息。
+
+加载extent 文件：
+1. 读取 extent 文件信息构造 Extent 结构，并添加到cache缓存中。
+2. 根据Extent结构构造ExtentInfo结构，并添加到extentInfoMap缓存中。
+
+|Extent|ExtentInfo|
+|-|-|
+|![F25](./F25.jpg)|![F26](./F26.jpg)|
