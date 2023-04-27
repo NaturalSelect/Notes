@@ -176,7 +176,7 @@ extent 文件具有两种类型：
 
 ![F21](./F21.jpg)
 
-在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的头部中。
+在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的头部（in memory）中。
 
 然后将计算出来的checksum 聚合在一起再进行一次计算。
 
@@ -208,6 +208,8 @@ ExtentStore初始化：
 |Extent|ExtentInfo|
 |-|-|
 |![F25](./F25.jpg)|![F26](./F26.jpg)|
+
+
 
 ### Partition Creation
 
