@@ -273,7 +273,7 @@ ExtentStore初始化：
 1. 对于Normal数据分区，对NormalExtent和TinyExtent执行修复。
 2. 对于非Normal数据分区，只对TinyExtent执行修复，NormalExtent会被过期淘汰。
 
-修复任务只由Leader执行。
+修复任务只由Primary-backup的Leader执行。
 
 ![F51](./F51.jpg)
 
@@ -291,6 +291,8 @@ ExtentStore初始化：
 |Repair Execution|
 |-|
 |![F57](./F57.jpg)|
+
+修复完成之后其他节点启动Raft（Leader已经启动了），执行Raft日志重放。
 
 ### Partition Creation
 
