@@ -176,7 +176,7 @@ extent 文件具有两种类型：
 
 ![F21](./F21.jpg)
 
-在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的头部（in memory）中。
+在计算CRC Checksum时，先对 extent 中的各个块进行计算，放入 extent 的header（in memory）中。
 
 然后将计算出来的checksum 聚合在一起再进行一次计算。
 
@@ -209,7 +209,88 @@ ExtentStore初始化：
 |-|-|
 |![F25](./F25.jpg)|![F26](./F26.jpg)|
 
+### Extent Creation
 
+1. 创建一个文件名为extent id的文件。
+2. 将相应的信息添加到extentInfoMap和cache中。
+
+每一个数据分区能容纳`60000`个extents。
+
+|Check|
+|-|
+|![F36](./F36.jpg)|
+|![F37](./F37.jpg)|
+
+![F38](./F38.jpg)
+
+|Create Extent|
+|-|
+|![F39](./F39.jpg)|
+
+### Extent Writing
+
+对于小文件将从数据分区的`availableTinyExtentC`中读取 extent id，写入的offset为此extent 文件大小并按照`4K`对齐，向上取整。
+
+![F40](./F40.jpg)
+
+![F41](./F41.jpg)
+
+|Tiny|Normal|
+|-|-|
+|![F42](./F42.jpg)|![F43](./F43.jpg)|
+
+### Extent Reading
+
+![F44](./F44.jpg)
+
+|Tiny|Normal|
+|-|-|
+|![F45](./F45.jpg)|![F46](./F46.jpg)|
+
+### Extent Deletion
+
+|Tiny|Normal|
+|-|-|
+|![F47](./F47.jpg)|![F48](./F48.jpg)|
+
+### Extent Snapshot
+
+每5分钟在后台执行一次。
+
+![F49](./F49.jpg)
+
+![F50](./F50.jpg)
+
+条件：
+1. NormalExtent的`ModifyTime > 60s`，size > 0 且没有被标记删除，。
+2. TinyExtent无条件。
+
+### Extent Repairment
+
+![F52](./F52.jpg)
+
+修复任务在数据分区被加载或创建后启动，每隔1分钟执行一次修复操作：
+1. 对于Normal数据分区，对NormalExtent和TinyExtent执行修复。
+2. 对于非Normal数据分区，只对TinyExtent执行修复，NormalExtent会被过期淘汰。
+
+修复任务只由Leader执行。
+
+![F51](./F51.jpg)
+
+|Repair|
+|-|
+|![F53](./F53.jpg)|
+|![F54](./F54.jpg)|
+
+|Repair Task|Extent Info|
+|-|-|
+|![F55](./F55.jpg)|![F56](./F56.jpg)|
+
+![F58](./F58.jpg)
+
+|Repair Execution|
+|-|
+|![F57](./F57.jpg)|
 
 ### Partition Creation
 
