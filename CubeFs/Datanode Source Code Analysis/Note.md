@@ -245,7 +245,7 @@ ExtentStore初始化：
 
 |Tiny|Normal|
 |-|-|
-|![F45](./F45.jpg)|![F46](./F46.jpg)|
+|![F45](./F45.png)|![F46](./F46.png)|
 
 ### Extent Deletion
 
