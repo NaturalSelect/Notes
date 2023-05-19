@@ -4,7 +4,7 @@
 * [Google File System](./Google%20File%20System/Note.md)
 * [Primary-Backup Replication](./Primary-Backup%20Replication/Note.md)
 * [Raft](./Raft/Note.md)
-* Zookeeper
+* [Zookeeper](./Zookeeper/Note.md)
 * CRAQ
 * Aurora
 * Cache Consistency

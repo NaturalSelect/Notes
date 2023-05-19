@@ -53,3 +53,27 @@ Watch机制被设计出来避免这点。
 ![F4](./F4.jpg)
 
 在读取时，Client可以同时为某个键设置一个Watch，这样当该键的状态改变，或者replica崩溃时（以便Client重建Watch）都将收到通知。
+
+## The Zookeeper API
+
+![F5](./F5.jpg)
+
+Zookeeper的存储结构与文件系统类似，这些目录和文件称为`znode`。
+
+总共有三种znodes：
+* 常规Znode。
+* 临时Znode - 与Client session绑定的znode，当Client正常或异常退出时，该znode被删除（这个功能通过Client周期性向zookeeper发送心跳实现）。
+* 顺序Znodes - 文件的名称类似`name_{id}`，由zookeeper保证`{id}`唯一且递增。
+
+![F6](./F6.jpg)
+
+每一个znode都有一个递增的版本号。
+
+zookeeper提供了以下API：
+* `Create(path,data,flags) -> bool` - 在`path`创建一个具有指定`flag`的znode，并返回是否成功创建（当znode不存在时成功）。
+* `Delete(path,version) -> bool` - 删除znode（只有版本与`version`相同时执行）。
+* `Exist(path,watch) -> bool` - 判断一个znode是否存在，或/并设置watch。
+* `Getdata(path,watch) -> <data,version>` - 获取znode的数据，或/并设置watch。
+* `Setdata(path,data,version) -> bool` - 设置znode的数据（只有版本与`version`相同时执行）。
+
+## Zookeeper Lock
