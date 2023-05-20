@@ -75,5 +75,45 @@ zookeeper提供了以下API：
 * `Exist(path,watch) -> bool` - 判断一个znode是否存在，或/并设置watch。
 * `Getdata(path,watch) -> <data,version>` - 获取znode的数据，或/并设置watch。
 * `Setdata(path,data,version) -> bool` - 设置znode的数据（只有版本与`version`相同时执行）。
+* `GetChildren(path,watch) -> znodes` - 获取目录下的所有`entires`。
 
-## Zookeeper Lock
+利用`EPHEMERAL | SEQUENTIAL`可以实现分布式锁：
+* `SEQUENTIAL` - 保证锁的公平并阻止惊群效应。
+* `EPHEMERAL` - 保证锁不会丢失。
+
+```c
+Lock
+1: n = create(1 + "/lock-", EPHEMERAL | SEQUENTIAL)
+2: C = getChildren(1, false)
+3: if n is lowest znode in C, exit
+4: p = znode in C ordered just before n
+5: if exists(p, true) wait for watch event
+6: goto 2
+```
+
+```c
+Unlock
+1: delete(n)
+```
+
+或者更复杂的读写锁。
+
+```c
+Write Lock:
+1: n = create(1 + "write-", EPHEMERAL|SEQUENTIAL)
+2: c = getChildren(1, false)
+3: if n is lowest znode in C exit
+4: p = znode in C ordered just before n
+5: if exists(p, true) wait for event
+6: goto 2
+```
+
+```c
+Read Lock
+1: n = create(1 + "read-", EPHEMERAL|SEQUENTIAL)
+2: c = getChildren(1, false)
+3: if no write znodes lower than n in C, exit
+4: p = write znode in C ordered just before n
+5: if exists(p, true) wait for event
+6: goto 3
+```
