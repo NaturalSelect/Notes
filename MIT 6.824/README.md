@@ -5,7 +5,7 @@
 * [Primary-Backup Replication](./Primary-Backup%20Replication/Note.md)
 * [Raft](./Raft/Note.md)
 * [Zookeeper](./Zookeeper/Note.md)
-* CRAQ
+* [CRAQ](./CRAQ/Note.md)
 * Aurora
 * Cache Consistency
 * Distributed Transactions
