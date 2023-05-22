@@ -6,7 +6,7 @@
 * [Raft](./Raft/Note.md)
 * [Zookeeper](./Zookeeper/Note.md)
 * [CRAQ](./CRAQ/Note.md)
-* Aurora
+* [Aurora](./Aurora/Note.md)
 * Cache Consistency
 * Distributed Transactions
 * Spanner

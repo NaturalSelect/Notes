@@ -54,8 +54,6 @@ Quorum Replication可能会产生冲突（即`R`中返回的数据包含不一�
 
 *NOTE：只有版本号仍然会产生冲突（并发写入），因此Lamport Clock（Lamport Timestamp）是更好的选择。*
 
-
-
 ## Aurora Design
 
 ![F6](./F6.jpg)
@@ -66,3 +64,29 @@ Aurora解决了EBS低性能的问题，它只传输DBMS进行恢复的关键—�
 |-|-|-|
 |RDS（4 Replicated EBS）|780,000|7.4|
 |Aurora（6 Replicated Aurora）|27,378,000|0.95|
+
+同时Aurora使用 `N=6，W=4,R=3`的Quorum Replication，并分散在`3`个AZ中。
+
+当一个事务被提交时，Aurora确保有 `W`个replicas已经记录了事务的log entires。
+
+*NOTE：这些节点不但存储WAL而且存储data pages同时将会根据传输来的log entries进行replay，同时Aurora在内存中对data pages进行缓存。*
+
+同时Aurora跟踪存储节点所拥有的最大 `LSN`，这样它就能避免Quorum Read。
+
+当Aurora崩溃时，只是简单地启动一个新的EC2实例，并告诉它WAL存储在哪里。
+
+*NOTE：只有进行恢复时，需要使用Quorum Read。*
+
+并且Aurora将通知存储节点进行恢复，丢弃未达到`W`的log entries。
+
+## Large Database
+
+Aurora将每 `10GB` 的数据存储在一个6个存储节点中（称为一个 Protect Group，PG）。
+
+设置PG是为了减少故障后的恢复时间（类似shard，节点承担的PG越多恢复时的并行性越高，可以从更多的其他节点恢复），同时支持单机不能存储的大型数据库。
+
+同时Aurora支持Primary-backup Replication，可以设置多达`15`个只读实例作为backup。
+
+![F10](./F10.jpg)
+
+同时primary也必须将log entires传输给backup。
