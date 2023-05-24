@@ -67,7 +67,7 @@ Aurora解决了EBS低性能的问题，它只传输DBMS进行恢复的关键—�
 
 同时Aurora使用 `N=6，W=4,R=3`的Quorum Replication，并分散在`3`个AZ中。
 
-当一个事务被提交时，Aurora确保有 `W`个replicas已经记录了事务的log entires。
+当一个事务被提交时，Aurora确保有 `W`个replicas已经记录了事务的log entries。
 
 *NOTE：这些节点不但存储WAL而且存储data pages同时将会根据传输来的log entries进行replay，同时Aurora在内存中对data pages进行缓存。*
 
@@ -89,4 +89,4 @@ Aurora将每 `10GB` 的数据存储在一个6个存储节点中（称为一个 P
 
 ![F10](./F10.jpg)
 
-同时primary也必须将log entires传输给backup。
+同时primary也必须将log entries传输给backup。

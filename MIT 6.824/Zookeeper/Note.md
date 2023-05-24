@@ -75,7 +75,7 @@ zookeeper提供了以下API：
 * `Exist(path,watch) -> bool` - 判断一个znode是否存在，或/并设置watch。
 * `Getdata(path,watch) -> <data,version>` - 获取znode的数据，或/并设置watch。
 * `Setdata(path,data,version) -> bool` - 设置znode的数据（只有版本与`version`相同时执行）。
-* `GetChildren(path,watch) -> znodes` - 获取目录下的所有`entires`。
+* `GetChildren(path,watch) -> znodes` - 获取目录下的所有`entries`。
 
 利用`EPHEMERAL | SEQUENTIAL`可以实现分布式锁：
 * `SEQUENTIAL` - 保证锁的公平并阻止惊群效应。
