@@ -7,7 +7,7 @@
 * [Zookeeper](./Zookeeper/Note.md)
 * [CRAQ](./CRAQ/Note.md)
 * [Aurora](./Aurora/Note.md)
-* Cache Consistency
+* [Cache Consistency](./Cache%20Consistency/Note.md)
 * Distributed Transactions
 * Spanner
 * Optimistic Concurrency Control
