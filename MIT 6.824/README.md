@@ -7,10 +7,10 @@
 * [Zookeeper](./Zookeeper/Note.md)
 * [CRAQ](./CRAQ/Note.md)
 * [Aurora](./Aurora/Note.md)
-* [Cache Consistency](./Cache%20Consistency/Note.md)
+* Cache Consistency
 * Distributed Transactions
-* Spanner
-* Optimistic Concurrency Control
+<!-- * [Cache Consistency](./Cache%20Consistency/Note.md) -->
+<!-- * [Distributed Transactions](./Distributed%20Transactions/Note.md) -->
 * Spark
 * Cache Consistency
 * Fork Consistency
