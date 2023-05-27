@@ -156,6 +156,8 @@ Percolator 中的任何节点都可以发出请求，直接修改 Bigtable 中�
 
 `Get()`要么看到已经完全提交的写记录，要么看到锁，在看到锁时 R 将阻塞直到锁被释放（锁被替换为写记录）。
 
+*NOTE：`Get()` 表面上是无锁的，实际上存在读写锁。*
+
 ### Fail Tolerance
 
 由于客户端随时可能故障，导致了事务处理的复杂度（Bigtable 可保证 tablet 服 务器故障不影响系统，因为Bigtable 确保写锁持久存在）。如果一个客户端在一个事务被提交时发生故障，锁将被遗弃。Percolator 必须清理这些锁，否则他们将导致将来的事务被非预期的挂起。
@@ -256,5 +258,69 @@ class Transaction
 ```
 
 ## Spanner Style Transaction
+
+Google Spanner是Google的、可扩展的、多版本、全球分布式、同步复制数据库。
+
+该系统提供了一个针对分布范围很广的分片数据的分布式事务。
+
+![F9](./F9.jpg)
+
+Spanner在多个数据中心之间使用Paxos进行复制。
+
+每一个分片都由一个Paxos管理，称为一个Paxos Group（Paxos组）。
+
+![F10](./F10.jpg)
+
+每一个Paxos Group都可以并行地处理数据。
+
+*NOTE：这种复制策略适合读多写少的环境。*
+
+### Transaction Id
+
+Spanner为每一个事务分配一个时间戳作为它们的id：
+* 只读事务的id是事务的开始时间戳。
+* 读写事务和写事务的id是事务的提交时间戳。
+
+![F19](./F19.jpg)
+
+### Concurrency Control & Transaction Commit
+
+Spanner使用2PL和快照隔离。
+
+#### Read-Write Transaction
+
+![F11](./F11.jpg)
+
+读写事务的表现如同一个标准的2PC，但它是在复制系统上进行的。
+
+Spanner将在事务设计到的分片中挑选一个协调者。
+
+首先客户端需要读取数据，同时节点给数据上锁。
+
+![F12](./F12.jpg)
+
+当进入Prepare阶段时，参与者的Prepare消息需要复制给其他副本。
+
+|Prepare|
+|-|
+|![F13](./F13.jpg)|
+|![F14](./F14.jpg)|
+|![F15](./F15.jpg)|
+
+同样，协调者对事务的决定（COMMIT或者ABORT），也需要发送给其他副本。
+
+|Commit|
+|-|
+|![F16](./F16.jpg)|
+|![F17](./F17.jpg)|
+|![F18](./F18.jpg)|
+
+#### Read Only Transaction
+
+在Spanner中，只读事务是无锁的，并且它非常快：
+* 它在本地数据中心读取数据。
+* 不需要锁和2PC。
+
+
 
 ## FaRM Style Transaction
