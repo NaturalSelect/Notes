@@ -4,7 +4,7 @@
 
 分布式事务能够很好地隐藏分片存储的复杂度，使得系统对外表现如同没有进行分片。
 
-*NOTE：只在一个机器（进程）上进行的事务不是分布式事务，是“单键事务”。*
+*NOTE：只在一个机器（进程）上进行的事务不是分布式事务，是“单机事务”。*
 
 ### Concurrency Control
 
@@ -102,6 +102,158 @@
 ![F8](./F8.jpg)
 
 ## Percolator Style Transaction
+
+BigTable是Google构造的分片多版本（multi-version）列族数据库，但只支持单行事务。
+
+Google后续开发了Percolator，增加通用事务的处理能力。
+
+Bigtable 为用户呈现一个多维排序的映射：`键` -> `（行，列，时间戳）`元组称为 cell。 Bigtable 在每一行上提供查找和 更新操作，而 Bigtable 行事务可以对单个行进行原子读 - 修改 - 写操作。
+
+一个运行中的 Bigtable 包含一批 tablet 服务器，每个负责服务多个 tablet（key 空间内连续的域）。一个master 负责协调控制各 tablet 服务器的操作，比如指示它们装载或卸载 tablet。
+
+Percolator 充分利用了 Bigtable 的接口：数据被组织到 Bigtable 行和列中， Percolator 会将元数据存储在旁边特殊的列中。
+
+### Transaction Id
+
+Google Oracle 是一个用严格的单调增序给外界分配时间戳的服务器。
+
+*NOTE：因为每个事务都需 要调用 oracle 两次，这个服务必须有很好的可伸缩性。*
+
+oracle 会定期分配出一个时间戳范围，通过将范围中的最大值写入稳定的存储；范围确定后，oracle 能在内存中原子递增来快速分配时间戳，查询时也不涉及磁盘 I/O。
+
+如果 oracle 重启， 将以稳定存储中的上次范围的最大值作为开始值（此值之前可能有已经分配的和未分配的，但是之后的值肯定是未分配的，所以即使故障或重启也不会导致分配重复的时间戳，保证单调递增）。
+
+事务开始时分配一个时间戳（`start_ts`）作为事务id，同时在写事务提交时，还会创建一个提交时间戳。
+
+### Concurrency Control & Transaction Commit
+
+Percolator使用2PL和快照隔离，锁是一个特殊的列。
+
+Percolator 中的任何节点都可以发出请求，直接修改 Bigtable 中的状 态：没有太好的办法来拦截并分配锁。所以，Percolator 一定要明确的维护锁。 锁必须持久化以防机器故障；如果一个锁在两阶段提交之间消失，系统可能错误 的提交两个会冲突的事务。
+
+在 Commit 的第一阶段(“预写”，prewrite)，我们尝试锁住所有被写的 cell。（为了处理客户端失败的情况，指派一个任意锁为“primary”)。事务在每个被写的 cell 上读取元数据来检查冲突。
+
+*NOTE：实际使用中需要对写入进行排序以避免deadlock。*
+
+有两种冲突场景：
+* 如果事务在它的开始时间戳之后看见另一个写记录，它会取消，这是“写-写”冲突。
+*  如果事务在任意时间戳看见另一个锁，它也取消：如果看到的锁在我们的开始时间戳之前，可能提交的事务已经提交了却因为某种原因推迟了锁的释放，但是这种情况可能性不大，保险起见所以取消。
+
+如果没有冲突，则将锁和数据写到各自 cell 的开始时间戳下，事务可以提交并执行到第二阶段。
+
+在第二阶段的开始， 客户端从 oracle 获取提交时间戳。然后，在每个 cell（从“primary”开始），客户端释放它的锁，替换锁为一个写记录以让其他读事务知晓。读过程中看到写记录就可以确定它所在时间戳下的新数据已经完成了提交，并可以用它的时间戳作为“指针”找到提交的真实数据。一旦“primary”的写记录可见了， 其他读事务就会知晓新数据已写入，所以事务必须提交。
+
+一个 `Get()`操作第一步是在时间戳范围 `[0,开始时间戳]`（是右开区间）内检查有没有锁，这个范围是在此次事务快照所有可见的时间戳。如果看到一个锁，表示另一个事务在并发的写这个 cell，所以读事务必须等待直到此锁释放。如果没有锁出现，`Get()`操作在时间戳范围内读取最近的写记录然后返回它的时间戳对应的数据项。
+
+事务协议使用严格增长的时间戳来保证 `Get()`能够返回所有在“开始时间戳”之前已提交的写操作。
+
+举个例子，考虑一个事务 `R` 在时间戳 `T(R)`执行读取操作，一个写事务 `W` 在**提交时间戳** `T(W) < T(R)`执行了提交：
+* 由于 `T(W) < T(R)`，可知 oracle 肯定是在 `T(R)`之前或相同的批处理中给出 `T(W)`。
+* 因此，`W` 是在 `R` 收到 `T(R)`之前请求 了 `T(W)`作为提交时间戳。
+* `R` 在收到 `T(R)`之前不能执行读取操作，而 `W` 在它的提交时间戳 `T(W)`之前必定完成了锁的写入。
+* 上面的推理保证了 `W` 在 `R` 做任何读之前就写入了它所有的锁。
+* `R` 的 `Get()`要么看到已经完全提交的写记录，要么看到锁，在看到锁时 `R` 将阻塞直到锁被释放（锁被替换为写记录）。
+
+`Get()`要么看到已经完全提交的写记录，要么看到锁，在看到锁时 R 将阻塞直到锁被释放（锁被替换为写记录）。
+
+### Fail Tolerance
+
+由于客户端随时可能故障，导致了事务处理的复杂度（Bigtable 可保证 tablet 服 务器故障不影响系统，因为Bigtable 确保写锁持久存在）。如果一个客户端在一个事务被提交时发生故障，锁将被遗弃。Percolator 必须清理这些锁，否则他们将导致将来的事务被非预期的挂起。
+
+Percolator 用一个懒惰的途径来实现清理：当一个事务 `A` 遭遇一个被事务 `B` 遗弃的锁，`A` 可以确定 `B` 遭遇故障，并清除它的锁。
+
+Percolator 在每个 事务中会对任意的提交或者清理操作指定一个 cell 作为同步点。这个 cell 的锁被称之为“primary 锁”。`A` 和 `B` 在哪个锁是 primary 上达成一致（primary 锁的位置 被写入所有 cell 的锁中）。
+
+清理或提交操作都需要修改 primary 锁；这 个修改操作会在一个 Bigtable 行事务之下执行，所以只有一个操作可以成功。
+
+特别的，在 `B` 提交之前，它必须检查它依然拥有 primary 锁，提交时会将它替换为 一个写记录。在 `A` 删除 `B` 的锁之前，`A` 也必须检查 primary 锁来保证 `B` 没有提 交；如果 primary 锁依然存在它就能安全的删除 `B` 的锁。
+
+如果一个客户端在第二阶段提交时崩溃，我们必须对这种事务执行前滚（roll-forward），因为某些lock已经成为了写记录。
+
+可以通过检查 primary 锁来 区分这两种情况：
+* 如果 primary 锁已被替换为一个写记录，写入此锁的事务则必须提交。
+* 否则它应该被回滚（因为我们总是先提交 primary，所以如果 primary 没有提交，我们能肯定回滚是安全的）。
+
+*NOTE：执行 roll forward 时，执行清理的事务也是将搁浅的锁替换为一个写记录。*
+
+### Code
+
+```cpp
+class Transaction
+{
+    struct Write { Row row; Column: col; string value; };
+
+    vector<Write> writes_;
+
+    int start_ts_;
+
+    Transaction() :start_ts_(orcle.GetTimestamp()) {}
+
+    void Set(Write w) { writes_.push_back(w); }
+
+    bool Get(Row row,Column c,string *value)
+    {
+        while(true)
+        {
+            bigtable::Txn = bigtable::StartRowTransaction(row);
+            // Check for locks that signal concurrent writes.
+            if(T.Read(row,c+"locks",[0,start_ts_]))
+            {
+                // There is a pending lock; try to clean it and wait
+                BackoffAndMaybeCleanupLock(row,c);
+                continue;
+            }
+        }
+        // Find the latest write below our start_timestamp.
+        latest_write = T.Read(row,c+"write",[0,start_ts_]);
+        if(!latest_write.found()) return false; // no data
+        int data_ts = latest_write.start_timestamp();
+        *value = T.Read(row,c+"data",[data_ts,data_ts]);
+        return true;
+    }
+
+    // prewrite tries to lock cell w, returning false in case of conflict.
+    bool Prewrite(Write w,Write primary)
+    {
+        Column c = w.col;
+        bigtable::Txn T = bigtable::StartRowTransaction(w.row);
+        // abort on writes after our start stimestamp ...
+        if(T.Read(w.row,c+"write",[start_ts_,max])) return false;
+        // ... or locks at any timestamp.
+        if(T.Read(w.row,c+"lock",[0,max])) return false;
+        T.Write(w.row,c+"data",start_ts_,w.value);
+        T.Write(w.row,c+"lock",start_ts_,
+            {primary.row,primary.col}); // The primary's location.
+        return T.Commit();
+    }
+
+    bool Commit()
+    {
+        Write primary = write_[0];
+        vector<Write> secondaries(write_.begin() + 1,write_.end());
+        if(!Prewrite(primary,primary)) return false;
+        for(Write w : secondaries)
+            if(!Prewrite(w,primary)) return false;
+        int commit_ts = orcle.GetTimestamp();
+        // Commit primary first.
+        Write p = primary;
+        bigtable::Txn T = bigtable::StartRowTransaction(p.row);
+        if(!T.Read(p.row,p.col+"lock",[start_ts_,start_ts_]))
+            return false; // aborted while working
+        T.Write(p.row,p.col+"write",commit_ts,
+            start_ts_); // Pointer to data written at start_ts_
+        T.Erase(p.row,p.col+"lock",commit_ts);
+        if(!T.Commit()) return false; // commit point
+        // Second phase: write our write records for secondary cells.
+        for(Write w : secondaries)
+        {
+            bigtable::write(w.row,w.col+"write",commit_ts,start_ts_);
+            bigtable::Erase(w.row,w.col+"lock",commit_ts);
+        }
+        return true;
+    }
+}; // class Transaction
+```
 
 ## Spanner Style Transaction
 
