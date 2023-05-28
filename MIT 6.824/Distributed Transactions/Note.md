@@ -12,11 +12,9 @@
 * 悲观并发控制。
 * 乐观并发控制。
 
-## Atomic Commit
+## Two-Phase Commit
 
 原子提交协议（atomic commit protocol）判断每一个分片是否都能提交事务，保证事务提交的原子性。
-
-### Two-Phase Commit
 
 二阶段提交（Two-Phase Commit，2PC）分为两个阶段：
 * Prepare
@@ -30,7 +28,7 @@
 
 每一个事务都有一个事务id（transaction id，TID），协调者在开启事务之前，将分配一个唯一的事务id给事务。
 
-#### Prepare Phase
+### Prepare Phase
 
 协调者在Prepare阶段将属于每一个分片的请求发送给每一个分片：
 * 对于读请求，分片立即执行，并返回结果。
@@ -46,7 +44,7 @@
 
 协调者等待每一个参与者的回复，然后进入Commit阶段。
 
-#### Commit Phase
+### Commit Phase
 
 如果每一个参与者都回复`YES`，那么协调者将提交事务：
 * 向每一个参与者发送`COMMIT`消息。
@@ -63,7 +61,7 @@
 最后协调者将向客户端返回事务执行的结果。
 
 
-#### Fault Tolerance
+### Fault Tolerance
 
 当参与者故障并重启：
 * 如果未对`PREPARE`回复`YES`，则放弃事务。
@@ -113,7 +111,7 @@ Bigtable 为用户呈现一个多维排序的映射：`键` -> `（行，列，�
 
 Percolator 充分利用了 Bigtable 的接口：数据被组织到 Bigtable 行和列中， Percolator 会将元数据存储在旁边特殊的列中。
 
-### Transaction Id
+### Transaction Timestamp
 
 Google Oracle 是一个用严格的单调增序给外界分配时间戳的服务器。
 
@@ -123,7 +121,7 @@ oracle 会定期分配出一个时间戳范围，通过将范围中的最大值�
 
 如果 oracle 重启， 将以稳定存储中的上次范围的最大值作为开始值（此值之前可能有已经分配的和未分配的，但是之后的值肯定是未分配的，所以即使故障或重启也不会导致分配重复的时间戳，保证单调递增）。
 
-事务开始时分配一个时间戳（`start_ts`）作为事务id，同时在事务提交时，还会创建一个提交时间戳。
+事务开始时分配一个时间戳（`start_ts`），同时在事务提交时，还会创建一个提交时间戳。
 
 ### Concurrency Control & Transaction Commit
 
@@ -275,19 +273,47 @@ Spanner在多个数据中心之间使用Paxos进行复制。
 
 *NOTE：这种复制策略适合读多写少的环境。*
 
-### Transaction Id
+### Transaction Timestamp
 
-Spanner为每一个事务分配一个时间戳作为它们的id：
+Spanner为每一个事务分配一个时间戳：
 * 只读事务的id是事务的开始时间戳。
 * 读写事务和写事务的id是事务的提交时间戳。
 
 ![F19](./F19.jpg)
 
-### Concurrency Control & Transaction Commit
+不同于Percolator使用Oracle进行授时，Spanner假设时间是同步的，必须使用复杂的方式满足这一点。
+
+![F21](./F21.jpg)
+
+Spanner在每一个数据中心安装GPS接收器，用于接收时间。
+
+每一个安装GPS接收器的机器称为time master，spanner会同时向多个time master请求当前时间。
+
+误差来源：
+* GPS信号传播的误差，约为几纳秒。
+* 与time master通讯的误差。
+
+Spanner采用了一种TrueTime方案，当请求时间时返回的不是一个时间点而是一个区间`[earliest time,latest time]`。
+
+![F22](./F22.jpg)
+
+spanner使用`latest time`，作为事务的时间戳。
+
+![F23](./F23.jpg)
+
+对于一个读写事务，它必须等待`now()`的`earliest time`大于它所选择的时间戳才能提交。
+
+![F24](./F24.jpg)
+
+即不会有新的事务在事务选择的`[earliest time,latest time]`区间之中，读写事务才可以提交。
+
+*NOTE：保证外部一致性（external consistency），重排读写事务到区间的最后，使得系统内部的提交顺序与外部的提交顺序一致。*
+
+![F25](./F25.jpg)
+
+### Read-Write Transaction
 
 Spanner使用2PL和快照隔离。
-
-#### Read-Write Transaction
 
 ![F11](./F11.jpg)
 
@@ -315,12 +341,19 @@ Spanner将在事务设计到的分片中挑选一个协调者。
 |![F17](./F17.jpg)|
 |![F18](./F18.jpg)|
 
-#### Read Only Transaction
+### Read Only Transaction
 
 在Spanner中，只读事务是无锁的，并且它非常快：
 * 它在本地数据中心读取数据。
 * 不需要锁和2PC。
 
+Spanner同时存储数据的多个版本，每一个版本都存储写入它的事务的提交时间戳。
 
+当只读事务发送读请求时，会同时发送事务的开始时间戳，只有小于等于该时间戳的版本能被返回。
+
+![F20](./F20.jpg)
+
+PaxosGroup的Leader会向其Follower发送时间戳，只有当Follower收到的时间戳大于等于读请求的时间戳时，该replica才能响应读请求，否则请求将被推迟。
 
 ## FaRM Style Transaction
+
