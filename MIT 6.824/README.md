@@ -9,8 +9,6 @@
 * [Aurora](./Aurora/Note.md)
 * Cache Consistency
 * Distributed Transactions
-<!-- * [Cache Consistency](./Cache%20Consistency/Note.md) -->
-<!-- * [Distributed Transactions](./Distributed%20Transactions/Note.md) -->
 * Spark
 * Cache Consistency
 * Fork Consistency
