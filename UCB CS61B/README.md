@@ -1,2 +1,2 @@
-# Guide
+# Index
 

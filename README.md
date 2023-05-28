@@ -4,7 +4,7 @@
 
 <img src="README.gif" width="20%"/>
 
-## Guide
+## Index
 
 * [CMU 15-445 Intro to Database System](./CMU%2015-445/README.md)
 * [MIT 6.S081 Operation System](./MIT%206.S081/README.md)

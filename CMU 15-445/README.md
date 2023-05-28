@@ -1,4 +1,4 @@
-# Guide
+# Index
 
 * [Advanced SQL](./Advanced%20Sql/Note.md)
 * [Database Storage](./Database%20Storage/Note.md)
