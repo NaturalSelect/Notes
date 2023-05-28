@@ -355,5 +355,54 @@ Spanner同时存储数据的多个版本，每一个版本都存储写入它的�
 
 PaxosGroup的Leader会向其Follower发送时间戳，只有当Follower收到的时间戳大于等于读请求的时间戳时，该replica才能响应读请求，否则请求将被推迟。
 
-## FaRM Style Transaction
+## FaRm Style Transaction
+
+FaRm是一个研究型系统，针对所有replicas都在一个数据中心的workload，探索新的RDMA硬件的潜力。
+
+在FaRm的数据中心中，存在一个配置管理器，每个分片使用Primary-backup Replication，配置管理器负责决定哪个节点是primary。
+
+![F26](./F26.jpg)
+
+*NOTE：在FaRm中客户端是事务的发起者和协调者。*
+
+为了提高性能：
+* FaRm使用分片。
+* FaRm将所有数据保存在RAM中。
+* FaRm利用UPX作为NVRAM方案。
+* FaRm使用RDMA，在不引发远程主机中断的情况访问远程主机的内存。
+* FaRm利用kernel bypass直接访问NIC。
+
+### NVRAM Scheme Of FaRm
+
+FaRm在每一个机架上放置一个备用电池，当主电源故障（断电），就启用备用电源，这个电源大致能够支撑10分钟。
+
+当电源系统发现主电源出现故障，就会向所有机器发出消息。
+
+接收到消息的节点立刻停止所有的工作，将数据写入持久存储设备（例如磁盘），然后关闭机器。
+
+### Kernel Bypass & RDMA
+
+在传统架构中，使用RPC需要经过多个内核调用。
+
+![F27](./F27.jpg)
+
+Kernel Bypass（内核旁路）允许kernel定义一套配置，然后允许应用绕过内核直接访问NIC，缺点是应用必须自己处理网络栈。
+
+![F28](./F28.jpg)
+
+*NOTE：只有现代NIC硬件支持。*
+
+RDMA(Remote Direct Memory Access，远程直接内存访问)，允许应用使用特殊的包直接读写对端内存空间中的内存（RDMA能够识别page table），而不会引起对端CPU的中断（不消耗CPU时间）。
+
+![F29](./F29.jpg)
+
+*NOTE：只对外提供读写的RDMA称为one-sided RDMA。*
+
+实际上FaRm不但使用RDMA读内存（FaRm不会直接进行写，除非是RPC操作），还使用它来发送RPC（直接写入对端的RPC缓冲区）。
+
+### Concurrency Control
+
+![F30](./F30.jpg)
+
+FaRm使用乐观并发控制，这个方案不需要锁。
 
