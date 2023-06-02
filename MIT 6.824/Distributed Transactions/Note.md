@@ -400,9 +400,57 @@ RDMA(Remote Direct Memory Access，远程直接内存访问)，允许应用使�
 
 实际上FaRm不但使用RDMA读内存（FaRm不会直接进行写，除非是RPC操作），还使用它来发送RPC（直接写入对端的RPC缓冲区）。
 
-### Concurrency Control
+*NOTE:不直接进行写的原因是需要支持事务。*
+
+### Concurrency Control & Atomic Commit
 
 ![F30](./F30.jpg)
 
-FaRm使用乐观并发控制，这个方案不需要锁。
+FaRm使用乐观并发控制和可串行化。
 
+FaRm事务API：
+* `txCreate()` - 创建事务。
+* `txRead(oid)` - 读取指定object id的对象。
+* `txWrite(oid,data)` - 写入数据到指定object id的对象（写入只缓存在本地）。
+* `txCommit()` - 提交事务（将缓存的写入发送给服务器）。
+
+![F31](./F31.jpg)
+
+OCC分为执行阶段（execute phase）和提交阶段（commit phase）。
+
+在执行阶段，Client使用RDMA从其他机器上读取数据。
+
+*NOTE：在FaRm中，Client是事务的协调器。*
+
+![F32](./F32.jpg)
+
+当事务的所有操作完成则进入提交阶段，提交阶段由几个子阶段组成：
+* Lock。
+* Validate。
+* Commit Backup。
+* Commit Primary。
+
+Lock阶段：
+1. Client向事务的参与者发送object id，版本号和object的新值。
+2. 参与者将使用log记录这些值。
+3. 如果当前的object已经被锁定，返回`NO`。
+4. 如果当前的object的版本号与请求中的不一致，返回`NO`。
+5. 对object加锁，返回`YES`。
+
+![F33](./F33.jpg)
+
+*NOTE：在FaRm中，`3`和`4`实际上是同时执行的，RDMA使用原子指令同时检查版本号和lock（lock和version number保存在同一个整型字段`header`内），并且设置lock。*
+
+*NOTE：只有被写入的object参与lock阶段。*
+
+当所有参与者的响应都是`YES`时，进入Validate阶段：
+1. 查看之前的查看之前读取的其他object是否被锁定，如果未被锁定则继续。
+2. 查看之前读取的其他object的版本号与事务开始时是否一致，如果一致则继续。
+
+*NOTE：同样，在FaRm中`1`和`2`同时进行。*
+
+然后进入Commit Backup阶段，Client将写入发送给参与者的backup（确保在参与者故障后事务还能继续）。
+
+最后进入Commit Primary阶段：
+* Client向所有的参与者发送`COMMIT`，提交事务。
+* 然后向所有参与者发送`TRUNCATE`消息，参与者收到之后就可以丢弃之前记录的log。
