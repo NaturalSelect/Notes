@@ -8,7 +8,7 @@
 * [CRAQ](./CRAQ/Note.md)
 * [Aurora](./Aurora/Note.md)
 * Cache Consistency
-* Distributed Transactions
+* [Distributed Transactions](./Distributed%20Transactions/Note.md)
 * Spark
 * Cache Consistency
 * Fork Consistency
