@@ -9,7 +9,7 @@
 * [Aurora](./Aurora/Note.md)
 * Cache Consistency
 * [Distributed Transactions](./Distributed%20Transactions/Note.md)
-* Spark
+* [Spark](./Spark/Note.md)
 * Causal Consistency
 * Fork Consistency
 * Bitcoin
