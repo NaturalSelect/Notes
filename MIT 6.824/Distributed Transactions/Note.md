@@ -454,3 +454,12 @@ Lock阶段：
 最后进入Commit Primary阶段：
 * Client向所有的参与者发送`COMMIT`，提交事务。
 * 然后向所有参与者发送`TRUNCATE`消息，参与者收到之后就可以丢弃之前记录的log。
+
+### Combine Percolator & FaRm Transaction
+
+对Perocolator事务进行修改可以使其获得可串行化隔离（在`Prewrite`和`Commit`之前插入`Validate`阶段）：
+* Prewrite。
+* Validate。
+* Commit。
+
+在`Validate`中，只需要检查readset的cell是否被锁定，并且版本是否与之前读取的一致。
