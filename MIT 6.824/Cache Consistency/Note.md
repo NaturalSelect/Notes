@@ -106,3 +106,109 @@ log entries一开始存储在Client上，只有Client需要释放锁时（包含
 
 ## Facebook Memcached Style Cache
 
+Memcached 是一个知名的，简单的，全内存的缓存方案。Facebook对Memcached进行调整以构建和扩展一个分布式的 key-value存储来为世界上最大的社交网站服务的。
+
+### The Evolution Of Web Application Architecture
+
+任何网站都是从小型网站演化而来的，在一开始只需要在一台机器上运行web service（front end）和database并向外部提供服务。
+
+![F10](./F10.jpg)
+
+随着网站变得流行，单一的front end成为瓶颈，架构演化成多个front end和一个database的模式，以提供更多的CPU处理能力。
+
+*NOTE：此时瓶颈仍在处理从database得到的数据并返回给user，而不在database。*
+
+![F11](./F11.jpg)
+
+随着越来越多的front end，database逐渐变成瓶颈，需要使用分片对database进行拆分。
+
+![F12](./F12.jpg)
+
+为了获得更快的响应速度，减低读取数据的延迟而引用缓存层：
+* front end将首先从缓存中读取。
+* 如果front end未从缓存中获取数据再从数据库读取，读取完成后插入缓存以加速后面的读取。
+
+![F13](./F13.jpg)
+
+对于缓存来说，强一致性并不重要，但至少需要保证用户能够读到自己的写入，并且数据落后的不能太多。
+
+### Facebook Architecture
+
+Facebook有两个数据中心，一个在美国西海岸，一个在东海岸。
+
+*NOTE：每一个数据中心称为region。*
+
+![F14](./F14.jpg)
+
+每一个数据中心都部署相同的服务：
+* Mysql。
+* Memcached。
+* Front End Web Server。
+
+一个数据中心中的Mysql作为primary database另一个数据中心则作为backup，数据中心的Mysql之间通过异步复制进行复制，缓存层作为look-aside cache，并且使用失效策略（invalidation scheme）保证一致性。
+
+|失效策略（invalidation scheme）| |更新策略（update scheme）| |
+|-|-|-|-|
+|Read|Write|Read|Write|
+|![F15](./F15.jpg)|![F16](./F16.jpg)|![F15](./F15.jpg)|![F18](./F18.jpg)|
+
+*NOTE：使用更新策略需要分布式锁。*
+
+![F17](./F17.jpg)
+
+同时无论是异步复制还是正常的更新操作都会删除缓存。
+
+*NOTE：在front end中主动delete缓存是必要的，因为database删除缓存存在延迟。*
+
+### Performance
+
+Facebook对memcached做了两种调整以获得高性能：
+* Partition（分区） - 对键进行hash，将不同hash的键分配到不同的机器上以获取更好的并行性。
+* Replication（复制） - 对每一个分区进行复制防止负载集中到一台机器上，并减少热点的影响。
+
+复制不仅发生在region之间，在同一个region也进行复制。
+
+![F20](./F20.jpg)
+
+*NOTE：这就是为什么正常的更新操作也需要删除缓存。*
+
+为了节省内存，将不正常热的键存储在region集群间共享的region pool中。
+
+![F21](./F21.jpg)
+
+对于新集群为了防止大量的cache miss导致database过载，front end还必须支持cold start：
+* 首先从本地集群的memcahced中获取数据。
+* 如果miss，则从本地数据中心的另一个集群的memcached中获取数据。
+* 最后才到database获取数据。
+
+当新集群的memcached足够热时，再退出cold start模式。
+
+### Thundering Herb
+
+如果一个hot key被写入，可能导致多个front end并行读取database，产生大量的负载，这种现象称为惊群效应（thundering herb）。
+
+|Thundering Herb|
+|-|
+|![F22](./F22.jpg)|
+|![F23](./F23.jpg)|
+
+为了解决这个问题，Facebook设计了memcached lease机制。
+
+这个机制像分布式锁一样工作，只有第一个front end被允许去获取database的数据，而其他的front end必须等待lease timeout。
+
+|Lease|
+|-|
+|![F24](./F24.jpg)|
+|![F25](./F25.jpg)|
+|![F26](./F26.jpg)|
+|![F27](./F27.jpg)|
+
+### Gutter Server
+
+如果一个memcached server故障，会导致front end产生大量的读取请求发送到服务器。
+
+为了防止database过载，Facebook对故障的memcached进行重定向到一个临时的gutter server。
+
+![F28](./F28.jpg)
+
+*NOTE：同时database的delete也需要发送到所有的gutter server，因为任何一个gutter server都可以替换故障的memcached。*
