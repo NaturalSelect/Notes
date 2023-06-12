@@ -150,3 +150,13 @@ Client向大多数服务器发送读取请求用于读取key，每个节点在�
 |读延迟|写延迟|吞吐量|吞吐量（随读负载百分比变化）|
 |-|-|-|-|
 |![F2](./F2.jpg)|![F3](./F3.jpg)|![F1](./F1.jpg)|![F4](./F4.jpg)|
+
+### Timestamp Oracle & Raft
+
+利用共识系统的Epoch，可以构建不需要进行共识的timestamp oracle（本质是一种batch adding timestamp oracle）。
+
+只需要将timestamp分为两个部分：
+* Epoch - 高位epoch。
+* Local Counter - 低位共识leader的本地计数器。
+
+这个方案在128bits timestamp时表现最佳。
