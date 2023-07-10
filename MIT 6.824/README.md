@@ -10,7 +10,7 @@
 * [Cache Consistency](./Cache%20Consistency/Note.md)
 * [Distributed Transactions](./Distributed%20Transactions/Note.md)
 * [Spark](./Spark/Note.md)
-* Causal Consistency
+* [Causal Consistency](./Causal%20Consistency/Note.md)
 * Fork Consistency
 * Bitcoin
 * Blockstack
