@@ -171,9 +171,10 @@ Client向大多数服务器发送读取请求用于读取key，每个节点在�
 
 我们将当前节点担任Leader的Raft状态机数量称为`LeaderCount`，并在`RequestVote`中包含`LeaderCount`，并在另一端的响应中原封不动地返回这个数字。
 
-对于接受者而言，必须检查：
-* 候选人的其他状态。
-* 确保`LeaderCount <= LocalLeaderCount`，否则认为其选举失败。
+对于`RequestVote`的接收者而言：
+* 如果候选人的Log与当前节点一样新则确保`LeaderCount <= LocalLeaderCount`，否则认为其选举失败。
+* 如果候选人的Log比当前节点新，则认为其选举成功。
+* 如果候选人的Log比当前节点旧，则认为其选举失败。
 
 如果选举成功，检查返回的`LeaderCount`是否与本地保存的一致，如果是则：
 * 上台成为Leader。
