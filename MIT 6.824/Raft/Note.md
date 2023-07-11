@@ -160,3 +160,19 @@ Client向大多数服务器发送读取请求用于读取key，每个节点在�
 * Local Counter - 低位共识leader的本地计数器。
 
 这个方案在128bits timestamp时表现最佳。
+
+### MultiRaft Leader Balance
+
+通过修改`RequestVote`，我们可以尽可能地平衡MultiRaft的Leader分布。
+
+*NOTE：这种平衡不是确定性的，并且它将阻止并发选举（即一段时间内由一个节点发出的选举至多只有一个能够成功）。*
+
+我们将当前节点担任Leader的Raft状态机数量称为`LeaderCount`，并在`RequestVote`中包含`LeaderCount`，并在另一端的响应中原封不动地返回这个数字。
+
+对于接受者而言，必须检查：
+* 候选人的其他状态。
+* 确保`LeaderCount <= LocalLeaderCount`，否则认为其选举失败。
+
+如果选举成功，检查返回的`LeaderCount`是否与本地保存的一致，如果是则：
+* 上台成为Leader。
+* 递增`LeaderCount`。
