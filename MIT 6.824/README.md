@@ -12,5 +12,5 @@
 * [Spark](./Spark/Note.md)
 * [Causal Consistency](./Causal%20Consistency/Note.md)
 * [Fork Consistency](./Fork%20Consistency/Note.md)
-* Bitcoin
+* [Bitcoin](./Bitcoin/Note.md)
 * Blockstack
