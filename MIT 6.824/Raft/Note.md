@@ -184,11 +184,25 @@ Client向大多数服务器发送读取请求用于读取key，每个节点在�
 
 *NOTE: 极端情况下可能出现两个节点平分状态机（如果一直都是这两个节点租约先到期的话）。*
 
+### Lease-Based Read
+
+如果Leader的租约被majority承认，那么：
+* 当前当前节点仍然处于Leader状态。
+* 可以向Client提供线性化读取。
+
+在对抗网络分区时，此方案是脆弱的，Leader续租之后可能仍有不在majority里的peer发起选举。
+
+因此，最保险的方法是：
+* 启用Prevote。
+* 对于每一次续租，都添加一个empty log到logs。
+
 ### Lease Awareness
 
 Leader通过感知自己的租约是否被majority承认是一项强大的能力，可以做到：
 * Lease-Based Read（提供基于租约的线性化读取）。
 * Notify Client Leader Change（通知Client Leader改变）。
+
+同时还应该在`AppendEntires`添加逻辑时钟以区分同一个Follower在不同时间段的Lease响应。
 
 ```cpp
 auto before{now()};
