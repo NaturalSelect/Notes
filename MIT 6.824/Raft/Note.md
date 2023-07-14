@@ -183,3 +183,18 @@ Client向大多数服务器发送读取请求用于读取key，每个节点在�
 * 递增`LeaderCount`。
 
 *NOTE: 极端情况下可能出现两个节点平分状态机（如果一直都是这两个节点租约先到期的话）。*
+
+### Lease Awareness
+
+Leader通过感知自己的租约是否被majority承认是一项强大的能力，可以做到：
+* Lease-Based Read（提供基于租约的线性化读取）。
+* Notify Client Leader Change（通知Client Leader改变）。
+
+```cpp
+auto before{now()};
+advanceRaft();
+auto result = waitForNextRound();
+if (result) {
+    leaseTimeout = before + minLeaseTimeout
+}
+```
