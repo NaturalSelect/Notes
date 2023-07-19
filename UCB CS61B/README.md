@@ -1,6 +1,6 @@
 # Index
 
 * [Tests](./Tests/Note.md)
-* Lists
+* [Lists](./Lists/Note.md)
 * Trees
 * Graphs

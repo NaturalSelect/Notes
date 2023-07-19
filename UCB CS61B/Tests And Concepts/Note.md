@@ -1,4 +1,4 @@
-# Tests
+# Tests & Concepts
 
 ## Ad Hoc Testing
 
@@ -13,3 +13,7 @@
 ## Choas Test
 
 混沌测试（Choas Test）通过注入故障的方式，检测系统的健壮性。
+
+## Invariant
+
+不变量（invariant）指的是保证代码能够运行的条件。
