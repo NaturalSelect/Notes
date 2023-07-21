@@ -22,6 +22,14 @@ Single Linked List由一系列的nodes组成，每一个node都内嵌一个指�
 
 Double Linked List由一系列的nodes组成，每一个node都内嵌一个指向下一个node的pointer，以及一个指向上一个node的pointer。
 
+![F4](./F4.png)
+
+|Double Linked List|Circular Linked List|
+|-|-|
+|![F2](./F2.png)|![F3](./F3.png)|
+
+通常使用环形方法实现。
+
 |Operations|Speed|
 |-|-|
 |Random Access|Slow|
