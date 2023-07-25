@@ -184,7 +184,6 @@ Client向大多数服务器发送读取请求用于读取key，每个节点在�
 
 *NOTE: 极端情况下可能出现两个节点平分状态机（如果一直都是这两个节点租约先到期的话）。*
 
-
 ### Read Index
 
 Read Index是一种线性化读取的方法。
@@ -195,13 +194,21 @@ Read Index是一种线性化读取的方法。
 
 *NOTE：等待`applied index`追赶的原因是，如果已提交的write request在read request之前，那么read request抵达时必然commit entires包含前者。*
 
-在获取commit index之后heartbeat确认当前节点仍是leader，确保之前获取commit index是当时最新的。
+```cpp
+auto term{GetTerm()};
+auto commitIndex{GetCommitIndex()};
+auto response{heartbeat()};
+// must check term, process pause may happends before our heartbeat
+if(response.Ok() && term == GetTerm()) {
+    // wait for applied index
+}
+```
 
 ### Lease-Based Read
 
 如果Leader的租约被majority承认，那么：
 * 当前当前节点仍然处于Leader状态。
-* 可以向Client提供线性化读取。
+* 可以向Client提供线性化读取（在无进程暂停及有限时钟漂移时安全）。
 
 *NOTE：需要等待`applied index`追赶`commit index`。*
 
