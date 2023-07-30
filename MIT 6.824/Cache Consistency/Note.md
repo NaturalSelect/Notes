@@ -196,6 +196,8 @@ Facebook对memcached做了两种调整以获得高性能：
 
 这个机制像分布式锁一样工作，只有第一个front end被允许去获取database的数据，而其他的front end必须等待lease timeout。
 
+*NOTE：同时对cache的删除将会导致lease失效，这样被重新排序的更新（即`Read`的`Set`有可能被重排到更新的`Write`的`Delete`后面）将被memcached忽略。*
+
 |Lease|
 |-|
 |![F24](./F24.jpg)|
