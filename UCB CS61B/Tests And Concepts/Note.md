@@ -39,3 +39,8 @@ def print_larger(x,y,compare,stringify):
         return stringify(x)
     return stringify(y)
 ```
+
+
+### Abstract Data Type
+
+抽象数据类型（Abstract Data Type）是一种编程语言中的类型，它只由操作定义而不是由实现定义。
