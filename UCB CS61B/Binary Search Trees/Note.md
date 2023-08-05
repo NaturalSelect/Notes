@@ -46,10 +46,8 @@
 ```cpp
 Node *Find(Key x) {
     Node *node = root;
-    while(node != nullptr) {
-        if(node.Key == x) {
-            break;
-        } else if(node.Key > x) {
+    while(node != nullptr && node.Key != x) {
+        if(node.Key > x) {
             node = node.Left;
         } else {
             node = node.Right;
@@ -71,7 +69,7 @@ Node *Find(Key x) {
 ![F6](./F6.png)
 
 ```cpp
-Node **GetInsertPoint(Key x,Node *node) {
+Node **GetInsertSlot(Key x,Node *node) {
     if(node.Key == x) {
         return &node;
     } else if(node.Key > x) {
@@ -85,14 +83,14 @@ void Insert(Key x) {
         root = new Node(x);
         return;
     }
-    Node **point = GetInsertPoint(root);
+    Node **slot = GetInsertSlot(root);
     // if find an empty position
     // or find an existed key
-    while(*point != nullptr && point->Key != x) {
-        point = GetInsertPoint(*point);
+    while(*slot != nullptr && slow->Key != x) {
+        slot = GetInsertSlot(*slot);
     }
     Node *newNode = new Node(x);
-    swap(newNode,*point);
+    swap(newNode,*slot);
     if(newNode != nullptr) {
         delete newNode;
     }
@@ -159,7 +157,7 @@ Node **FindPredecessorSlot(Node *node) {
     Node **slot = &node.Left;
     node = node.Left;
     // travel to right side
-    while(node.Left != nullptr) {
+    while(node.Right != nullptr) {
         slot = &node.Right;
         node = node.Right;
     }
