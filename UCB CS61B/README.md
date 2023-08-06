@@ -5,7 +5,7 @@
 * [Asymptotics Behavior](./Asymptotics%20Behavior/Note.md)
 * [Disjoint Sets](./Disjoint%20Sets/Note.md)
 * [Binary Search Trees](./Binary%20Search%20Trees/Note.md)
-* B-Trees
+* [B-Trees](./B-Trees/Note.md)
 * Red Black Trees
 * Hashing
 * Heaps

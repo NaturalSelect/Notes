@@ -202,3 +202,13 @@ void Delete(Key x) {
     }
 }
 ```
+
+## BST Tree Height
+
+![F14](./F14.png)
+
+在高度相同的情况下，稀疏的BST和密集的BST可能呈现完全不同的形态。
+
+在最坏的情况下，稀疏的BST的搜索效率下降为与链表一致。
+
+*NOTE：以随机顺序插入和删除的binary search tree是密集的，但是我们无法一直的以随机顺序进行操作。*
