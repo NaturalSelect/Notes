@@ -95,7 +95,7 @@ B-Tree vs B+Tree：
 
 证明：
 * 如果合并涉及其他inner node，那么当前inner node下面没有其他leaf node，即当前inner node的子节点数量为`1`。
-* 如果inner node的子节点数量为`1`却并没有导致inner node在之前的删除过程中被合并，那么`M`小于`3`。
+* 如果inner node的子节点数量为`1`却并没有导致inner node在之前的删除过程中被合并，这是不可能的。
 
 ## Concurrency Control
 
