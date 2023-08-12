@@ -72,3 +72,146 @@ void rotateRight(Node **slot) {
 |![F14](./F14.png)|
 
 平衡BST可以由不平衡的BST通过有限的旋转步骤得到。
+
+## Left-Leaning Red Black Binary Search Tree（LLRB)
+
+左倾红黑二叉搜索树（LLRB）的结构可以与一颗相应的2-3 Tree对应。
+
+因为2-3 Tree是平衡的，所以LLRB也是平衡的。
+
+![F15](./F15.png)
+
+红色的线称为“胶水连接”，当胶水连接都指向左边时，该树就是LLRB。
+
+|2-3 Tree|LLRB|
+|-|-|
+|![F16](./F16.png)|![F17](./F17.png)|
+
+同时LLRB也满足以下条件：
+* 没有节点可以由两条红色连接进行连接。
+* 所有节点到根节点的黑色连接数量相同。
+
+*NOTE：一个LLRB的高度不会超过一个 2-3 Tree的高度。*
+
+## Search
+
+LLRB的搜索操作与BST相同。
+
+```cpp
+Node *Search(Key key) {
+    Node *node = root;
+    while(node != nullptr && node.Key != key) {
+        if(node.Key > key) {
+            node = node.Left;
+        } else {
+            node = node.Right;
+        }
+    }
+    return node;
+}
+```
+
+## Insert
+
+在LLRB中，我们只使用Red link去添加节点。
+
+![F18](./F18.png)
+
+当存在右倾的Red link时，左旋Red link的父节点。
+
+![F19](./F19.png)
+
+当出现两个连续的red link时，右旋red link的起点。
+
+|Rotation|
+|-|
+|![F20](./F20.png)|
+|![F21](./F21.png)|
+
+当父节点的两个子节点都由red link连接时，翻转连接父节点的link的颜色（color flip）。
+
+|Color Flip|
+|-|
+|![F22](./F22.png)|
+|![F23](./F23.png)|
+
+*NOTE：可能存在级联操作（修改之后违反了其他规则需要继续修复）。*
+
+在实践中，可以将连接子节点的link的颜色存储到子节点中。
+
+```cpp
+RBNode *FindParent(RBNode *node) {
+    if(root == node) {
+        return nullptr;
+    }
+    RBNode *begin = root;
+    while(begin != nullptr && begin.Left != node && begin.Right != node) {
+        if(begin.Key > node.Key) {
+            begin = begin.Left;
+        } else {
+            begin = begin.Right;
+        }
+    }
+    return nullptr;
+}
+
+RBNode **FindSlot(Key key) {
+    RBNode **slot = &root;
+    RBNode *node = *slot;
+    while(node != nullptr && node.Key != key) {
+        if(node.Key > key) {
+            slot = &node.Left;
+            node = *slot;
+        } else {
+            slot = &node.Right;
+            node = *slot;
+        }
+    }
+    return slot;
+}
+
+void Insert(Key key) {
+    RBNode **slot = FindSlot(key);
+    if(*slot == nullptr) {
+        // root's color is unnecessary
+        *slot = NewRedNode(key);
+    }
+    RBNode *node = *slot;
+    RBNode *parent = FindParent(node);
+    while(parent != nullptr) {
+        // case(3): color flip
+        if(parent.Left != nullptr && parent.Right != nullptr) {
+            if(parent.Left.Color() == parent.Right.Color() && parent.Left.Color() == Red) {
+                parent.Left.SetColor(Black);
+                parent.Right.SetColor(Black);
+                parent.SetColor(Red);
+            }
+        }
+        // case(2): two red link
+        RBNode *upper = GetParent(parent);
+        if(upper != nullptr) {
+            if(parent.Left.Color() == parent.Color() && parent.Color() == Red) {
+                // set color
+                Color upperColor = upper.Color();
+                upper.SetColor(Red);
+                // parent will replace the position of upper
+                parent.SetColor(upperColor);
+                parent.Left.SetColor(Red);
+                slot = FindSlot(upper);
+                RotateRight(slot);
+            }
+        }
+        // case(1): right red link
+        if(parent.Right != nullptr && parent.Right.Color() == Red) {
+            // set color
+            Color parentColor = parent.Color();
+            parent.SetColor(Red);
+            // right will replace the position of parent
+            parent.Right.SetColor(parentColor);
+            slot = FindSlot(parent);
+            RotateLeft(slot);
+        }
+        parent = upper;
+    }
+}
+```

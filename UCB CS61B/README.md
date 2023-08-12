@@ -6,7 +6,7 @@
 * [Disjoint Sets](./Disjoint%20Sets/Note.md)
 * [Binary Search Trees](./Binary%20Search%20Trees/Note.md)
 * [B-Trees](./B-Trees/Note.md)
-* Red Black Trees
+* [Red Black Trees](./Red%20Black%20Trees/Note.md)
 * Hashing
 * Heaps
 * Tree and Graph Traversals
