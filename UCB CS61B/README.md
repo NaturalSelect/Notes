@@ -8,7 +8,7 @@
 * [B-Trees](./B-Trees/Note.md)
 * [Red Black Trees](./Red%20Black%20Trees/Note.md)
 * [Hashing](./Hashing/Note.md)
-* Heaps
+* [Heaps](./Heaps/Note.md)
 * Tree and Graph Traversals
 * Shortest Paths
 * Minimum Spanning Trees
