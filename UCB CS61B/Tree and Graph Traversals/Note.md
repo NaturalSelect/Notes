@@ -68,7 +68,7 @@ Queue<Node*> Inorder() {
 ![F3](./F3.png)
 
 ```cpp
-void Postorder() {
+Queue<Node*> Postorder() {
     Queue<Node*> order;
     if(root == nullptr) {
         return order;
@@ -101,12 +101,40 @@ void Postorder() {
         }
         prev = current;
     }
+    return order;
 }
 ```
 
 `Preorder`、`Inorder`、`Postorder`都是深度优先搜索（Depth First Search，DFS）。
 
 所以它们也称为`DFS Preorder`、`DFS Inorder`、`DFS Postorder`。
+
+### Level order Traversals
+
+层级顺序遍历（level order traversals）是一种广度优先搜索（BFS）。
+
+```cpp
+Queue<Node*> LevelOrder() {
+    Queue<Node*> order;
+    Queue<Node*> tmp;
+    if(root == nullptr) {
+        return order;
+    }
+    tmp.Push(root);
+    while(!tmp.Empty()) {
+        Node *node = tmp.Front();
+        tmp.Pop();
+        if(node.Left != nullptr) {
+            tmp.Push(node.Left);
+        }
+        if(node.Right != nullptr) {
+            tmp.Push(node.Right);
+        }
+        order.Push(node);
+    }
+    return order;
+}
+```
 
 ## Graph
 
@@ -168,6 +196,7 @@ BFS与DFS相反，需要尽可能避免深入。
 bool IsConnect(Node *begin,Node* end) {
     Queue<Node*> queue;
     queue.Push(begin);
+    begin.Mark();
     while(!queue.Empty()) {
         Node *current = queue.Front();
         if(current == end) {
@@ -176,7 +205,10 @@ bool IsConnect(Node *begin,Node* end) {
         queue.Pop();
         Vector<Node*> neighbor = GetPath(current);
         for(size_t i = 0;i != neighor.Count(); ++i) {
-            queue.Push(neighbor[i]);
+            if(!neighbor[i].Marked()) {
+                neighbor[i].Mark();
+                queue.Push(neighbor[i]);
+            }
         }
     }
     return false;

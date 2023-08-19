@@ -9,7 +9,7 @@
 * [Red Black Trees](./Red%20Black%20Trees/Note.md)
 * [Hashing](./Hashing/Note.md)
 * [Heaps](./Heaps/Note.md)
-* Tree and Graph Traversals
+* [Tree and Graph Traversals](./Tree%20and%20Graph%20Traversals/Note.md)
 * Shortest Paths
 * Minimum Spanning Trees
 * Range Searching and Multi-Dimensional Data
