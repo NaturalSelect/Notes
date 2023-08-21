@@ -1,10 +1,12 @@
 # Shortest Paths
 
-## Dijkstra
+## Dijkstra Algorithm
 
 Dijkstra 算法可以计算出某个点到其他点的最短路径。
 
 *NOTE：前提是不能有负边。*
+
+*NOTE：如果图没有权，BFS就能得到最短路径。*
 
 Dijkstra 是一种 Best First Search（最佳优先搜索），它总是先考虑当前条件下最优的元素（即最小的权值）。
 
@@ -90,7 +92,7 @@ DistanceTable ShortestPaths(Node *begin) {
 
 *NOTE：现代实现中使用优先级队列来索引最小权值的边。*
 
-## A*
+## A* Algorithm
 
 A* 能够计算出某个点到另外一个点的最短路径。
 
