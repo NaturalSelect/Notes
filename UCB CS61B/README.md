@@ -12,7 +12,7 @@
 * [Tree and Graph Traversals](./Tree%20and%20Graph%20Traversals/Note.md)
 * [Shortest Paths](./Shortest%20Paths/Note.md)
 * [Minimum Spanning Trees](./Minimum%20Spanning%20Trees/Note.md)
-* Range Searching and Multi-Dimensional Data
+* [Range Searching and Multi-Dimensional Data](./Range%20Searching%20and%20Multi-Dimensional%20Data/Note.md)
 * Tries
 * Reductions and Decomposition
 * Sorts
