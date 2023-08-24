@@ -65,4 +65,7 @@ size_t Hash(const char *s,size_t length) {
 }
 ```
 
-另请参阅：[Hash Table](../../CMU%2015-445/Hash%20Table/Note.md)
+---
+
+另请参阅：
+* [Hash Table](../../CMU%2015-445/Hash%20Table/Note.md)

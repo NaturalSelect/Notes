@@ -13,7 +13,7 @@
 * [Shortest Paths](./Shortest%20Paths/Note.md)
 * [Minimum Spanning Trees](./Minimum%20Spanning%20Trees/Note.md)
 * [Range Searching and Multi-Dimensional Data](./Range%20Searching%20and%20Multi-Dimensional%20Data/Note.md)
-* Tries
+* [Tries](./Tries/Note.md)
 * Reductions and Decomposition
 * Sorts
 * Compression

@@ -391,4 +391,8 @@ BTNode *Search(Key key) {
     return nullptr;
 }
 ```
-另请参阅：[Tree Index](../../CMU%2015-445/Tree%20Indexs/Note.md)
+
+---
+
+另请参阅：
+* [Tree Index](../../CMU%2015-445/Tree%20Indexs/Note.md)
