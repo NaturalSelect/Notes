@@ -24,6 +24,8 @@ Dijkstra 是一种 Best First Search（最佳优先搜索），它总是先考�
 
 如果经过该点之后再达到它的出边，比其他方式更短（即比在队列中记录的值更小），更新队列。
 
+*NOTE：称为对该节点的边进行relax。*
+
 ![F4](./F4.png)
 
 重复执行以上操作，直到队列为空。
@@ -58,7 +60,7 @@ DistanceTable ShortestPaths(Node *begin) {
     EdgeSet edges;
     // push start point to queue
     // {from,to,distance}
-    edges.Put({begin,0});
+    edges.Put({nullptr,begin,0});
     while(!edges.Empty()) {
         // pop min-item for queue
         Edge *min = nullptr;
@@ -74,6 +76,7 @@ DistanceTable ShortestPaths(Node *begin) {
         table.SetPath(e.To, { table.GetPath(e.From),e.To } );
         // update queue
         Node *from = e.To;
+        // relax edges
         for(auto &edge : from.Edges()) {
             // if not contain by result table
             if (!table.Contain(edge.To)) {
