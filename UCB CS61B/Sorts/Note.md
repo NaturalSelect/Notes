@@ -74,3 +74,78 @@
 插入排序存在in-place算法。
 
 ![F38](./F38.png)
+
+*NOTE：在几乎有序数组和小数组（长度小于15）上较快。*
+
+## Quick Sort
+
+![F39](./F39.gif)
+
+选择数组中的一个元素作为`pivot`。
+
+然后进行Partitioning，将比`pivot`小的元素放到`pivot`的左边，其余的放到右边。
+
+具体步骤：
+* 选择数组的第一项为`pivot`。
+* 定义两个指针`left`、`right`，其中`left = 0`，`right = size - 1`。
+* 当`left < right`时，执行以下步骤：
+  * 使用`right`指针往回找，直到遇到一个比`pivot`更小的值，把它放置到`left`的位置上。
+  * 使用`left`指针往后找，直到遇到一个比`pivot`更大的值，把它放置到`right`的位置上。
+* 在循环结束时，`left == right`，将`pivot`放置到`left`的位置上。
+
+![F40](F40.png)
+
+快速排序是一个递归算法：
+* 先对整个范围进行Partitioning。
+* 然后
+  * 对`[0,pivot index - 1]`进行Partitioning。
+  * 对`[pivot index + 1,end)`进行Partitioning。
+* 在递归的最深层，我们要进行Partitioning的范围将是`0`或`1`。 
+
+```cpp
+void QuickSort(int *arr, size_t begin, size_t end) {
+    if (begin >= end) {
+        return;
+    }
+    size_t size = end - begin;
+    if (size == 1) {
+        return;
+    }
+    // pick first element
+    // as pivot
+    int pivot = arr[begin];
+    size_t left = begin;
+    size_t right = end - 1;
+    // partitioning
+    while (left < right) {
+        // find first right element that
+        // smaller than pivot
+        while (left < right && arr[right] >= pivot) {
+            --right;
+        }
+        // take place of left side element
+        if (left < right) {
+            arr[left] = arr[right];
+        }
+        // find first left element that
+        // larger than pivot
+        while (left < right && arr[left] < pivot) {
+            ++left;
+        }
+        // take place of right side element
+        if (left < right) {
+            arr[right] = arr[left];
+        }
+    }
+    // put the pivot to center
+    arr[left] = pivot;
+    // sort left side of pivot
+    if (left) {
+        QuickSort(arr, begin, left);
+    }
+    // sort right side of pivot
+    QuickSort(arr, left + 1, end);
+}
+```
+
+![F41](F41.png)
