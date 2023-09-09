@@ -100,7 +100,7 @@
 * 然后
   * 对`[0,pivot index - 1]`进行Partitioning。
   * 对`[pivot index + 1,end)`进行Partitioning。
-* 在递归的最深层，我们要进行Partitioning的范围将是`0`或`1`。 
+* 在递归的最深层，我们要进行Partitioning的范围将是`0`或`1`。
 
 ```cpp
 void QuickSort(int *arr, size_t begin, size_t end) {
@@ -149,3 +149,7 @@ void QuickSort(int *arr, size_t begin, size_t end) {
 ```
 
 ![F41](F41.png)
+
+在排序前对序列进行shuffle，可以降低出现quick sort最坏情况的概率。
+
+![F42](F42.png)
