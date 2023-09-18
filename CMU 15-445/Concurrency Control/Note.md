@@ -105,7 +105,7 @@ Confilct Serializable调度与Serializable产生相同的效果。
 Dependency Graphs（依赖图）：
 * 每一个transaction都是图中的一个node。
 * 如果一个事务与另一个事务有冲突，那么两个node之间存在一个edge。
-* 
+*
 ![F6](./F6.jpg)
 
 ![F7](./F7.jpg)
@@ -206,10 +206,10 @@ LOCK TABLE <TABLE> <MODE>;
 同时在执行scan table and update时，也可以给DBMS一个提示。
 
 ```sql
-SELECT * 
+SELECT *
 FROM <TABLE>
 WHERE <FILTER>
-FOR UPDATE; 
+FOR UPDATE;
 ```
 
 ## Two Phase Locking（2PL）
@@ -229,7 +229,7 @@ FOR UPDATE;
 
 2PL的问题：
 * Cascading Aborts - 级联中止。
- 
+
 ![F34](./F34.jpg)
 
 *NOTE：因为T1终止，而T2读到了T1写入的值所以T2也终止，如果不终止则产生脏读。*
@@ -402,10 +402,10 @@ Validation Phase负责检测事务之间的读写冲突和写写冲突。
 
 Validation的方法有两种：
 * Backward Validation - 当事务提交时，查看所有已经提交（验证）的老事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
-  
+
 ![F82](./F82.jpg)
 * Forward Validation - 当事务提交时，查看所有未提交（验证）的新事务，确保不会与他产生冲突（`WriteSet(old) ∩ ReadSet(new) = empty set`）。
-  
+
 *NOTE：这种方式实际上不需要read timestamp。*
 
 ![F83](./F83.jpg)
@@ -463,7 +463,9 @@ DBMS为每一个逻辑上的object维护多个物理版本：
 * 当事务读一个对象时，DBMS返回当前事务可见的最新的对象。
 * 事务在启动时获取一个唯一的单调时间戳。
 
-*NOTE:MVCC不是一种并发控制协议，而是一种构建系统的方式。*
+*NOTE：MVCC不是一种并发控制协议，而是一种构建系统的方式。*
+
+*NOTE：在发布写入时，必须使用latch将所有的objects锁定，防止在写入事务之后启动只读事务读取到未完全发布的视图。*
 
 ![F102](./F103.jpg)
 
