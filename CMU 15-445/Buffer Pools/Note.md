@@ -116,22 +116,18 @@ DBMS通常拥有多个Buffer Pool，并在每个buffer pool上进行局部策略
 
 有两种方式找到你需要的page在哪个buffer pool上：
 * 第一种方式是buffer pool manager将对象的record id维护起来，放到一个列表中，通过这个表找到对应的object在哪个pool中。
-
-![F5](./F5.jpg)
+    ![F5](./F5.jpg)
 * 第二种方式，计算`hash(record id)%n`
 
 ## Pre-Fetching
 
 DBMS基于某个查询计划进行预取：
 * 循序扫描。
-* 
-![F7](./F7.jpg)
 
-![F8](./F8.jpg)
-
+    ![F7](./F7.jpg)
+    ![F8](./F8.jpg)
 * 索引扫描。
-
-![F9](./F9.jpg)
+    ![F9](./F9.jpg)
 
 ## Scan Sharing
 
