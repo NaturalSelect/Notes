@@ -123,3 +123,60 @@ XV6将process的kernel thread context保存在`process`结构的`context`字段�
 当kernel thread持有锁时执行`switch()`，如果下一个thread也需要这个锁，那么我们会在单核场景下引发死锁（因为被`switch()`的线程持有该线程需要的锁，而`acquire()`会关闭中断，所以时钟中断无法帮助我们，避免死锁），多核场景下也有类似的情况（即持有多个锁时可能产生）。
 
 ![F11](./F11.jpg)
+
+## Timer Interrupt
+
+Timer Interrupt是由Timer触发的中断，既可以由usertrap处理，也可以由kerneltrap处理。
+
+即进程无论是处于kernel Mode还是User Mode，都应该能处理Timer Interrupt。
+
+不过对于 **riscv** 来说，Timer Interrupt是一种非常特殊的Interrupt，具体表现在以下几个方面：
+
+* Timer 由CPU中的定时器周期触发。
+* 处理时，CPU处于Machine Mode，而非Kernel Mode。
+* 不可被屏蔽。
+* 不进行虚拟地址转换（这意味处理函数指针着必须是物理地址）。
+
+xv6使用软中断的方式处理timer interrupt。
+
+```asm
+timervec:
+        # start.c has set up the memory that mscratch points to:
+        # scratch[0,8,16] : register save area.
+        # scratch[32] : address of CLINT's MTIMECMP register.
+        # scratch[40] : desired interval between interrupts.
+
+        csrrw a0, mscratch, a0
+        sd a1, 0(a0)
+        sd a2, 8(a0)
+        sd a3, 16(a0)
+
+        # schedule the next timer interrupt
+        # by adding interval to mtimecmp.
+        ld a1, 32(a0) # CLINT_MTIMECMP(hart)
+        ld a2, 40(a0) # interval
+        ld a3, 0(a1)
+        add a3, a3, a2
+        sd a3, 0(a1)
+
+        # raise a supervisor software interrupt.
+        li a1, 2
+        csrw sip, a1
+
+        ld a3, 16(a0)
+        ld a2, 8(a0)
+        ld a1, 0(a0)
+        csrrw a0, mscratch, a0
+
+        mret
+```
+
+处理步骤如下：
+* 将三个寄存器保存在frame中（不清楚是哪个frame，应该不是trapframe）。
+* 进行一些处理。
+* 写入`sip`寄存器引发中断。
+* 恢复寄存器，返回。
+
+*NOTE： 寄存器`sip`记录挂起的中断，写入值将导致新中断产生（软中断）。*
+
+*NOTE：如果中断开启，将立即处理，如果中断关闭，则等待开启后处理。*
