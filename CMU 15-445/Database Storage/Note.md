@@ -1,10 +1,13 @@
 # Database Storage
 
 存储层次结构图
+
 ![F1](./F1.png)
+
 ![F2](./F2.png)
 
 读取64bit的访问时间表:
+
 ![F3](./F3.png)
 
 磁盘数据库的设计目标：
@@ -70,7 +73,7 @@ Page的头部通常存在一些元数据:
 1. 面向Tuple的page
 2. 日志结构的page
 
-### 面向Tuple的page
+### Tuple Orient Page(面向Tuple的page)
 
 ![F7](./F7.png)
 
@@ -90,7 +93,7 @@ slotted page移动快速，因为只需要移动slot在array的位置即可。
 
 当page满了之后还可以尝试压缩，来回收碎片化的空间（通常在后台进行，或者在插入时发现没有空间再运行）。
 
-### 日志结构的page
+### Logstructed Page(日志结构的page)
 
 不在page中存储tuples，而是存储修改tuple的信息（包括创建，更新，删除）。
 
@@ -143,6 +146,7 @@ Large Value指那些无法在单个page中放置的tuple。
 ### Overflow Page
 
 假设属性c非常大：
+
 ![F17](./F17.png)
 
 如果单个overflow page不能放置，还可以使用间接的overflow page（即使用overflow page存指针）。
@@ -150,6 +154,7 @@ Large Value指那些无法在单个page中放置的tuple。
 ### External Value Storage
 
 同样假设c非常大：
+
 ![F18](./F18.png)
 
 外部存储可以是一个指针，一个路径或者某个外部设备。
@@ -183,9 +188,11 @@ Workloads:
 ![F21](./F21.png)
 
 查询：
+
 ![F22](./F22.png)
 
 插入：
+
 ![F23](./F23.png)
 
 优点：
@@ -203,6 +210,7 @@ Workloads:
 ![F24](./F24.png)
 
 查询：
+
 ![F25](./F25.png)
 
 识别tuple：
