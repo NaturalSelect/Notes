@@ -222,6 +222,70 @@ ceph orch osd rm status
 ceph orch device zap <hostname> <path>
 ```
 
+## OSD Basic Operations
+
+查看OSD状态。
+
+```sh
+ceph osd stat
+```
+
+查看OSD映射信息。
+
+```sh
+ceph osd dump
+```
+
+查看OSD目录树。
+
+```sh
+ceph osd tree
+```
+
+将OSD逐出集群。
+
+```sh
+ceph out [OSD]
+```
+
+将OSD加入集群。
+
+```sh
+ceph in [OSD]
+```
+
+开启停止读写。
+
+```sh
+ceph start/stop [OSD]
+```
+
+设置OSD权重
+
+```sh
+ceph osd crush set {id} {weight} [{loc1} [{loc2} ...]]
+```
+
+暂停/开启OSD
+
+```sh
+ceph osd pause/unpause
+```
+
+*NOTE： 暂停之后整个集群不再接收数据。*
+
+禁用自动均衡。
+
+```sh
+ceph osd set noout
+```
+
+启用自动均衡。
+
+```sh
+ceph osd unset noout
+```
+
 ## Create Ceph Pool
 
 创建Pool。
@@ -382,3 +446,26 @@ ceph orch host drain <host>
 ```sh
 ceph orch host rm <host> --offline --force
 ```
+
+## RDB
+
+### Create
+
+创建pool。
+
+```sh
+ceph osd pool create [NAME]
+```
+
+将pool分配给RDB。
+
+```sh
+rbd pool init [pool-name]
+```
+
+创建image。
+
+```sh
+rbd create --size [SIZE] [POOL]/[IMAGE]
+```
+
