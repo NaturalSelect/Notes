@@ -1,0 +1,729 @@
+Testing metadata on /mnt/cephfs_hdd/mdtest_dir
+-- started at 10/17/2023 14:29:28 --
+
+mdtest-3.3.0 was launched with 1 total task(s) on 1 node(s)
+Command line used: mdtest '-n' '5000' '-u' '-z' '2' '-i' '3' '-d' '/mnt/cephfs_hdd'
+Path: /mnt
+FS: 45.2 GiB   Used FS: 5.9%   Inodes: 2.9 Mi   Used Inodes: 2.4%
+
+Nodemap: 1
+1 tasks, 4998 files/directories
+
+SUMMARY rate: (of 3 iterations)
+   Operation                      Max            Min           Mean        Std Dev
+   ---------                      ---            ---           ----        -------
+   Directory creation        :      41306.462      18594.644      29069.639       9355.380
+   Directory stat            :     520992.788     458022.025     499954.701      29650.938
+   Directory removal         :      75063.173      71072.527      72485.699       1825.379
+   File creation             :      82851.930      64961.020      74042.812       7306.478
+   File stat                 :     548477.366     536107.391     540841.180       5451.116
+   File read                 :     323478.040     310822.326     318730.470       5629.310
+   File removal              :     128580.089     125653.010     127138.937       1195.395
+   Tree creation             :      71650.346      49502.500      57693.106       9918.747
+   Tree removal              :        970.285        949.553        959.311          8.507
+-- finished at 10/17/2023 14:29:29 --
+
+Testing SWrite on /mnt/cephfs_hdd/test with threads 1
+SWRITE /mnt/cephfs_hdd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/cephfs_hdd/test: (groupid=0, jobs=1): err= 0: pid=3568: Tue Oct 17 14:29:41 2023
+  write: IOPS=896, BW=112MiB/s (117MB/s)(1024MiB/9141msec); 0 zone resets
+    clat (usec): min=76, max=239456, avg=1095.31, stdev=4971.46
+     lat (usec): min=80, max=239458, avg=1107.10, stdev=4985.33
+    clat percentiles (usec):
+     |  1.00th=[    91],  5.00th=[   101], 10.00th=[   114], 20.00th=[   137],
+     | 30.00th=[   155], 40.00th=[   172], 50.00th=[   192], 60.00th=[   221],
+     | 70.00th=[   269], 80.00th=[   359], 90.00th=[   709], 95.00th=[  3621],
+     | 99.00th=[ 21890], 99.50th=[ 29754], 99.90th=[ 51119], 99.95th=[ 60556],
+     | 99.99th=[240124]
+   bw (  KiB/s): min=21501, max=270307, per=100.00%, avg=116358.94, stdev=64749.49, samples=17
+   iops        : min=  167, max= 2111, avg=908.82, stdev=505.82, samples=17
+  lat (usec)   : 100=4.88%, 250=61.79%, 500=20.12%, 750=3.56%, 1000=1.43%
+  lat (msec)   : 2=2.17%, 4=1.17%, 10=1.00%, 20=2.49%, 50=1.27%
+  lat (msec)   : 100=0.10%, 250=0.01%
+  cpu          : usr=0.57%, sys=2.58%, ctx=7933, majf=0, minf=14
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,8192,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=112MiB/s (117MB/s), 112MiB/s-112MiB/s (117MB/s-117MB/s), io=1024MiB (1074MB), run=9141-9141msec
+
+Disk stats (read/write):
+  vda: ios=5/8027, merge=0/611, ticks=48/8977, in_queue=9025, util=97.79%
+Testing SRead on /mnt/cephfs_hdd/test with threads 1
+SREAD /mnt/cephfs_hdd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+
+SREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=1): err= 0: pid=3571: Tue Oct 17 14:30:42 2023
+  read: IOPS=214, BW=26.8MiB/s (28.1MB/s)(1610MiB/60003msec)
+    clat (usec): min=359, max=82447, avg=4655.07, stdev=7334.62
+     lat (usec): min=359, max=82447, avg=4655.54, stdev=7334.59
+    clat percentiles (usec):
+     |  1.00th=[  437],  5.00th=[  685], 10.00th=[  734], 20.00th=[  848],
+     | 30.00th=[  979], 40.00th=[ 1074], 50.00th=[ 1254], 60.00th=[ 1696],
+     | 70.00th=[ 2212], 80.00th=[ 8979], 90.00th=[14877], 95.00th=[21890],
+     | 99.00th=[32375], 99.50th=[36439], 99.90th=[53740], 99.95th=[60556],
+     | 99.99th=[79168]
+   bw (  KiB/s): min= 4039, max=108032, per=100.00%, avg=27613.47, stdev=18553.99, samples=119
+   iops        : min=   31, max=  844, avg=215.66, stdev=144.96, samples=119
+  lat (usec)   : 500=1.55%, 750=10.13%, 1000=20.78%
+  lat (msec)   : 2=32.91%, 4=11.62%, 10=3.62%, 20=12.93%, 50=6.34%
+  lat (msec)   : 100=0.12%
+  cpu          : usr=0.08%, sys=0.44%, ctx=12879, majf=0, minf=45
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=12879,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=26.8MiB/s (28.1MB/s), 26.8MiB/s-26.8MiB/s (28.1MB/s-28.1MB/s), io=1610MiB (1688MB), run=60003-60003msec
+
+Disk stats (read/write):
+  vda: ios=12867/40, merge=0/600, ticks=59253/209, in_queue=59462, util=99.74%
+Testing RWrite on /mnt/cephfs_hdd/test with threads 1
+RWrite /mnt/cephfs_hdd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/cephfs_hdd/test: (groupid=0, jobs=1): err= 0: pid=3580: Tue Oct 17 14:31:45 2023
+  write: IOPS=1000, BW=4002KiB/s (4098kB/s)(235MiB/60001msec); 0 zone resets
+    clat (usec): min=53, max=137975, avg=993.25, stdev=3870.88
+     lat (usec): min=53, max=137975, avg=994.05, stdev=3871.92
+    clat percentiles (usec):
+     |  1.00th=[   86],  5.00th=[  108], 10.00th=[  120], 20.00th=[  141],
+     | 30.00th=[  161], 40.00th=[  186], 50.00th=[  215], 60.00th=[  253],
+     | 70.00th=[  310], 80.00th=[  408], 90.00th=[  742], 95.00th=[ 2180],
+     | 99.00th=[21890], 99.50th=[27395], 99.90th=[41157], 99.95th=[49021],
+     | 99.99th=[64226]
+   bw (  KiB/s): min=  316, max=17045, per=100.00%, avg=4022.00, stdev=3312.46, samples=119
+   iops        : min=   79, max= 4261, avg=1005.38, stdev=828.13, samples=119
+  lat (usec)   : 100=3.76%, 250=55.78%, 500=25.26%, 750=5.36%, 1000=2.14%
+  lat (msec)   : 2=2.46%, 4=1.02%, 10=0.80%, 20=2.12%, 50=1.24%
+  lat (msec)   : 100=0.05%, 250=0.01%
+  cpu          : usr=0.31%, sys=2.70%, ctx=59925, majf=0, minf=13
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,60033,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=4002KiB/s (4098kB/s), 4002KiB/s-4002KiB/s (4098kB/s-4098kB/s), io=235MiB (246MB), run=60001-60001msec
+
+Disk stats (read/write):
+  vda: ios=0/60023, merge=0/1748, ticks=0/57955, in_queue=57955, util=98.59%
+Testing RRead on /mnt/cephfs_hdd/test with threads 1
+RREAD /mnt/cephfs_hdd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+
+RREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=1): err= 0: pid=3583: Tue Oct 17 14:32:47 2023
+  read: IOPS=195, BW=782KiB/s (801kB/s)(45.8MiB/60001msec)
+    clat (usec): min=241, max=71973, avg=5111.66, stdev=8298.29
+     lat (usec): min=241, max=71974, avg=5111.89, stdev=8298.34
+    clat percentiles (usec):
+     |  1.00th=[  293],  5.00th=[  322], 10.00th=[  334], 20.00th=[  359],
+     | 30.00th=[  383], 40.00th=[  412], 50.00th=[  553], 60.00th=[  766],
+     | 70.00th=[ 2040], 80.00th=[11076], 90.00th=[19006], 95.00th=[22152],
+     | 99.00th=[32900], 99.50th=[34866], 99.90th=[45876], 99.95th=[52167],
+     | 99.99th=[68682]
+   bw (  KiB/s): min=  136, max= 6312, per=97.52%, avg=762.62, stdev=1006.52, samples=119
+   iops        : min=   34, max= 1578, avg=190.61, stdev=251.64, samples=119
+  lat (usec)   : 250=0.04%, 500=47.08%, 750=12.44%, 1000=4.77%
+  lat (msec)   : 2=5.15%, 4=2.73%, 10=3.61%, 20=14.88%, 50=9.25%
+  lat (msec)   : 100=0.06%
+  cpu          : usr=0.04%, sys=0.24%, ctx=11731, majf=0, minf=12
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=11731,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=782KiB/s (801kB/s), 782KiB/s-782KiB/s (801kB/s-801kB/s), io=45.8MiB (48.1MB), run=60001-60001msec
+
+Disk stats (read/write):
+  vda: ios=11374/16, merge=0/517, ticks=59612/185, in_queue=59797, util=99.84%
+Testing SWrite on /mnt/cephfs_hdd/test with threads 4
+SWRITE /mnt/cephfs_hdd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/cephfs_hdd/test: (groupid=0, jobs=4): err= 0: pid=3587: Tue Oct 17 14:33:48 2023
+  write: IOPS=468, BW=58.6MiB/s (61.4MB/s)(3517MiB/60020msec); 0 zone resets
+    clat (usec): min=73, max=191831, avg=8522.45, stdev=17412.94
+     lat (usec): min=74, max=191834, avg=8529.21, stdev=17415.75
+    clat percentiles (usec):
+     |  1.00th=[    90],  5.00th=[   133], 10.00th=[   174], 20.00th=[   367],
+     | 30.00th=[   529], 40.00th=[   717], 50.00th=[  1020], 60.00th=[  1598],
+     | 70.00th=[  3130], 80.00th=[  9896], 90.00th=[ 35390], 95.00th=[ 45876],
+     | 99.00th=[ 78119], 99.50th=[ 90702], 99.90th=[126354], 99.95th=[141558],
+     | 99.99th=[162530]
+   bw (  KiB/s): min= 6400, max=472832, per=100.00%, avg=60361.79, stdev=18171.46, samples=476
+   iops        : min=   50, max= 3694, avg=471.31, stdev=141.96, samples=476
+  lat (usec)   : 100=1.97%, 250=12.41%, 500=14.29%, 750=12.82%, 1000=7.99%
+  lat (msec)   : 2=14.31%, 4=8.74%, 10=7.55%, 20=5.41%, 50=10.37%
+  lat (msec)   : 100=3.82%, 250=0.33%
+  cpu          : usr=0.08%, sys=0.48%, ctx=55311, majf=0, minf=59
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,28137,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=58.6MiB/s (61.4MB/s), 58.6MiB/s-58.6MiB/s (61.4MB/s-61.4MB/s), io=3517MiB (3688MB), run=60020-60020msec
+
+Disk stats (read/write):
+  vda: ios=1/28163, merge=0/92, ticks=13/59819, in_queue=59831, util=99.43%
+Testing SRead on /mnt/cephfs_hdd/test with threads 4
+SREAD /mnt/cephfs_hdd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+SREAD /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=4): err= 0: pid=3594: Tue Oct 17 14:34:53 2023
+  read: IOPS=724, BW=90.5MiB/s (94.9MB/s)(5434MiB/60016msec)
+    clat (usec): min=387, max=86709, avg=5488.74, stdev=8022.01
+     lat (usec): min=387, max=86709, avg=5489.24, stdev=8021.96
+    clat percentiles (usec):
+     |  1.00th=[  685],  5.00th=[  906], 10.00th=[  988], 20.00th=[ 1172],
+     | 30.00th=[ 1434], 40.00th=[ 1647], 50.00th=[ 1860], 60.00th=[ 2147],
+     | 70.00th=[ 2835], 80.00th=[ 9503], 90.00th=[19792], 95.00th=[22152],
+     | 99.00th=[33162], 99.50th=[39060], 99.90th=[50594], 99.95th=[54789],
+     | 99.99th=[67634]
+   bw (  KiB/s): min=15088, max=308480, per=99.87%, avg=92590.61, stdev=14445.75, samples=476
+   iops        : min=  116, max= 2410, avg=723.05, stdev=112.86, samples=476
+  lat (usec)   : 500=0.16%, 750=1.45%, 1000=9.36%
+  lat (msec)   : 2=44.55%, 4=20.02%, 10=4.78%, 20=9.83%, 50=9.74%
+  lat (msec)   : 100=0.11%
+  cpu          : usr=0.06%, sys=0.51%, ctx=43512, majf=0, minf=175
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=43471,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=90.5MiB/s (94.9MB/s), 90.5MiB/s-90.5MiB/s (94.9MB/s-94.9MB/s), io=5434MiB (5698MB), run=60016-60016msec
+
+Disk stats (read/write):
+  vda: ios=43237/10, merge=117/16, ticks=235487/66, in_queue=235553, util=99.32%
+Testing RWrite on /mnt/cephfs_hdd/test with threads 4
+RWrite /mnt/cephfs_hdd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/cephfs_hdd/test: (groupid=0, jobs=4): err= 0: pid=3601: Tue Oct 17 14:35:56 2023
+  write: IOPS=905, BW=3621KiB/s (3708kB/s)(212MiB/60038msec); 0 zone resets
+    clat (usec): min=58, max=194164, avg=4412.89, stdev=13305.51
+     lat (usec): min=58, max=194165, avg=4413.75, stdev=13305.98
+    clat percentiles (usec):
+     |  1.00th=[    88],  5.00th=[   115], 10.00th=[   133], 20.00th=[   167],
+     | 30.00th=[   217], 40.00th=[   351], 50.00th=[   553], 60.00th=[   742],
+     | 70.00th=[  1205], 80.00th=[  2311], 90.00th=[  6718], 95.00th=[ 28705],
+     | 99.00th=[ 72877], 99.50th=[ 87557], 99.90th=[113771], 99.95th=[124257],
+     | 99.99th=[149947]
+   bw (  KiB/s): min=  192, max=23712, per=100.00%, avg=3638.82, stdev=1068.99, samples=476
+   iops        : min=   48, max= 5928, avg=909.25, stdev=267.28, samples=476
+  lat (usec)   : 100=2.50%, 250=31.48%, 500=12.58%, 750=13.67%, 1000=6.09%
+  lat (msec)   : 2=11.90%, 4=7.46%, 10=5.38%, 20=2.42%, 50=4.03%
+  lat (msec)   : 100=2.29%, 250=0.22%
+  cpu          : usr=0.07%, sys=0.96%, ctx=107268, majf=0, minf=46
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,54344,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=3621KiB/s (3708kB/s), 3621KiB/s-3621KiB/s (3708kB/s-3708kB/s), io=212MiB (223MB), run=60038-60038msec
+
+Disk stats (read/write):
+  vda: ios=0/54390, merge=0/1824, ticks=0/58498, in_queue=58497, util=98.10%
+Testing RRead on /mnt/cephfs_hdd/test with threads 4
+RREAD /mnt/cephfs_hdd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+RREAD /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=4): err= 0: pid=3607: Tue Oct 17 14:37:01 2023
+  read: IOPS=726, BW=2904KiB/s (2974kB/s)(170MiB/60031msec)
+    clat (usec): min=203, max=82297, avg=5471.38, stdev=9470.31
+     lat (usec): min=203, max=82297, avg=5471.67, stdev=9470.32
+    clat percentiles (usec):
+     |  1.00th=[  322],  5.00th=[  379], 10.00th=[  416], 20.00th=[  461],
+     | 30.00th=[  506], 40.00th=[  562], 50.00th=[  676], 60.00th=[  848],
+     | 70.00th=[ 1483], 80.00th=[11076], 90.00th=[20317], 95.00th=[26084],
+     | 99.00th=[40109], 99.50th=[45876], 99.90th=[60031], 99.95th=[66847],
+     | 99.99th=[74974]
+   bw (  KiB/s): min=  520, max=14936, per=100.00%, avg=2920.89, stdev=693.04, samples=476
+   iops        : min=  130, max= 3734, avg=729.72, stdev=173.28, samples=476
+  lat (usec)   : 250=0.09%, 500=28.85%, 750=26.02%, 1000=9.80%
+  lat (msec)   : 2=6.77%, 4=1.45%, 10=3.81%, 20=12.86%, 50=9.98%
+  lat (msec)   : 100=0.36%
+  cpu          : usr=0.07%, sys=0.31%, ctx=43639, majf=0, minf=45
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=43586,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=2904KiB/s (2974kB/s), 2904KiB/s-2904KiB/s (2974kB/s-2974kB/s), io=170MiB (179MB), run=60031-60031msec
+
+Disk stats (read/write):
+  vda: ios=43584/10, merge=0/20, ticks=237339/166, in_queue=237505, util=99.14%
+Testing SWrite on /mnt/cephfs_hdd/test with threads 16
+SWRITE /mnt/cephfs_hdd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/cephfs_hdd/test: (groupid=0, jobs=16): err= 0: pid=3614: Tue Oct 17 14:38:02 2023
+  write: IOPS=394, BW=49.3MiB/s (51.7MB/s)(2958MiB/60030msec); 0 zone resets
+    clat (usec): min=73, max=472981, avg=40564.32, stdev=53587.30
+     lat (usec): min=77, max=472984, avg=40570.72, stdev=53587.59
+    clat percentiles (usec):
+     |  1.00th=[    97],  5.00th=[   182], 10.00th=[  3490], 20.00th=[  8160],
+     | 30.00th=[ 10683], 40.00th=[ 14484], 50.00th=[ 20317], 60.00th=[ 27395],
+     | 70.00th=[ 38011], 80.00th=[ 60556], 90.00th=[107480], 95.00th=[168821],
+     | 99.00th=[242222], 99.50th=[287310], 99.90th=[379585], 99.95th=[408945],
+     | 99.99th=[463471]
+   bw (  KiB/s): min= 5161, max=191931, per=100.00%, avg=50539.35, stdev=2337.97, samples=1904
+   iops        : min=   38, max= 1497, avg=393.41, stdev=18.27, samples=1904
+  lat (usec)   : 100=1.16%, 250=5.65%, 500=1.42%, 750=0.30%, 1000=0.22%
+  lat (msec)   : 2=0.37%, 4=1.36%, 10=16.95%, 20=21.99%, 50=26.88%
+  lat (msec)   : 100=12.67%, 250=10.18%, 500=0.86%
+  cpu          : usr=0.02%, sys=0.24%, ctx=46815, majf=0, minf=210
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,23665,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=49.3MiB/s (51.7MB/s), 49.3MiB/s-49.3MiB/s (51.7MB/s-51.7MB/s), io=2958MiB (3102MB), run=60030-60030msec
+
+Disk stats (read/write):
+  vda: ios=0/23689, merge=0/74, ticks=0/58183, in_queue=58183, util=97.46%
+Testing SRead on /mnt/cephfs_hdd/test with threads 16
+SREAD /mnt/cephfs_hdd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+SREAD /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=16): err= 0: pid=3632: Tue Oct 17 14:39:07 2023
+  read: IOPS=1437, BW=180MiB/s (188MB/s)(10.5GiB/60024msec)
+    clat (usec): min=372, max=268029, avg=11123.17, stdev=13604.02
+     lat (usec): min=372, max=268029, avg=11123.40, stdev=13604.01
+    clat percentiles (usec):
+     |  1.00th=[   807],  5.00th=[  1156], 10.00th=[  1418], 20.00th=[  1745],
+     | 30.00th=[  2040], 40.00th=[  2638], 50.00th=[  4424], 60.00th=[  7963],
+     | 70.00th=[ 13173], 80.00th=[ 21627], 90.00th=[ 30540], 95.00th=[ 38536],
+     | 99.00th=[ 56886], 99.50th=[ 64750], 99.90th=[ 84411], 99.95th=[ 99091],
+     | 99.99th=[235930]
+   bw (  KiB/s): min=44544, max=895232, per=100.00%, avg=184875.06, stdev=8843.54, samples=1904
+   iops        : min=  348, max= 6994, avg=1443.69, stdev=69.08, samples=1904
+  lat (usec)   : 500=0.03%, 750=0.64%, 1000=2.10%
+  lat (msec)   : 2=26.08%, 4=19.60%, 10=14.70%, 20=15.17%, 50=19.82%
+  lat (msec)   : 100=1.81%, 250=0.04%, 500=0.01%
+  cpu          : usr=0.03%, sys=0.14%, ctx=86332, majf=0, minf=740
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=86292,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=180MiB/s (188MB/s), 180MiB/s-180MiB/s (188MB/s-188MB/s), io=10.5GiB (11.3GB), run=60024-60024msec
+
+Disk stats (read/write):
+  vda: ios=86017/12, merge=244/12, ticks=952627/82, in_queue=952708, util=99.76%
+Testing RWrite on /mnt/cephfs_hdd/test with threads 16
+RWrite /mnt/cephfs_hdd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/cephfs_hdd/test: (groupid=0, jobs=16): err= 0: pid=3651: Tue Oct 17 14:40:09 2023
+  write: IOPS=596, BW=2388KiB/s (2445kB/s)(140MiB/60155msec); 0 zone resets
+    clat (usec): min=50, max=756936, avg=26768.68, stdev=62058.63
+     lat (usec): min=50, max=756936, avg=26769.86, stdev=62060.59
+    clat percentiles (usec):
+     |  1.00th=[   114],  5.00th=[   178], 10.00th=[   635], 20.00th=[  1827],
+     | 30.00th=[  2180], 40.00th=[  2343], 50.00th=[  2900], 60.00th=[  4555],
+     | 70.00th=[  8848], 80.00th=[ 25560], 90.00th=[ 83362], 95.00th=[166724],
+     | 99.00th=[295699], 99.50th=[358613], 99.90th=[522191], 99.95th=[591397],
+     | 99.99th=[675283]
+   bw (  KiB/s): min=  142, max=19920, per=100.00%, avg=2412.08, stdev=230.28, samples=1893
+   iops        : min=   34, max= 4980, avg=600.41, stdev=57.61, samples=1893
+  lat (usec)   : 100=0.51%, 250=6.74%, 500=2.41%, 750=0.47%, 1000=0.20%
+  lat (msec)   : 2=12.68%, 4=34.69%, 10=13.64%, 20=6.54%, 50=8.06%
+  lat (msec)   : 100=5.35%, 250=6.85%, 500=1.72%, 750=0.14%, 1000=0.01%
+  cpu          : usr=0.01%, sys=0.30%, ctx=71353, majf=0, minf=212
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,35908,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=2388KiB/s (2445kB/s), 2388KiB/s-2388KiB/s (2445kB/s-2445kB/s), io=140MiB (147MB), run=60155-60155msec
+
+Disk stats (read/write):
+  vda: ios=0/35940, merge=0/1029, ticks=0/57854, in_queue=57854, util=96.83%
+Testing RRead on /mnt/cephfs_hdd/test with threads 16
+RREAD /mnt/cephfs_hdd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+RREAD /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=16): err= 0: pid=3671: Tue Oct 17 14:41:14 2023
+  read: IOPS=1608, BW=6435KiB/s (6590kB/s)(377MiB/60039msec)
+    clat (usec): min=215, max=186877, avg=9910.46, stdev=13499.73
+     lat (usec): min=215, max=186877, avg=9910.93, stdev=13499.82
+    clat percentiles (usec):
+     |  1.00th=[   429],  5.00th=[   611], 10.00th=[   758], 20.00th=[   889],
+     | 30.00th=[  1123], 40.00th=[  1614], 50.00th=[  2474], 60.00th=[  5276],
+     | 70.00th=[ 11994], 80.00th=[ 20055], 90.00th=[ 28967], 95.00th=[ 37487],
+     | 99.00th=[ 55837], 99.50th=[ 65274], 99.90th=[ 84411], 99.95th=[ 96994],
+     | 99.99th=[181404]
+   bw (  KiB/s): min= 2023, max=32438, per=100.00%, avg=6448.34, stdev=285.28, samples=1904
+   iops        : min=  505, max= 8108, avg=1609.76, stdev=71.33, samples=1904
+  lat (usec)   : 250=0.01%, 500=2.35%, 750=7.26%, 1000=16.83%
+  lat (msec)   : 2=18.93%, 4=12.00%, 10=8.65%, 20=13.94%, 50=18.30%
+  lat (msec)   : 100=1.69%, 250=0.04%
+  cpu          : usr=0.03%, sys=0.13%, ctx=96686, majf=0, minf=231
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=96594,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=6435KiB/s (6590kB/s), 6435KiB/s-6435KiB/s (6590kB/s-6590kB/s), io=377MiB (396MB), run=60039-60039msec
+
+Disk stats (read/write):
+  vda: ios=96567/24, merge=0/27, ticks=951321/440, in_queue=951762, util=98.84%
+Testing SWrite on /mnt/cephfs_hdd/test with threads 64
+SWRITE /mnt/cephfs_hdd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/cephfs_hdd/test: (groupid=0, jobs=64): err= 0: pid=3694: Tue Oct 17 14:42:17 2023
+  write: IOPS=273, BW=34.2MiB/s (35.9MB/s)(2062MiB/60274msec); 0 zone resets
+    clat (usec): min=72, max=1379.0k, avg=233142.53, stdev=235202.78
+     lat (usec): min=73, max=1379.0k, avg=233150.93, stdev=235202.78
+    clat percentiles (usec):
+     |  1.00th=[     96],  5.00th=[    131], 10.00th=[    176],
+     | 20.00th=[    343], 30.00th=[  21890], 40.00th=[ 120062],
+     | 50.00th=[ 191890], 60.00th=[ 254804], 70.00th=[ 325059],
+     | 80.00th=[ 404751], 90.00th=[ 566232], 95.00th=[ 692061],
+     | 99.00th=[ 994051], 99.50th=[1149240], 99.90th=[1233126],
+     | 99.95th=[1333789], 99.99th=[1384121]
+   bw (  KiB/s): min=15444, max=228962, per=100.00%, avg=39253.63, stdev=554.41, samples=6826
+   iops        : min=   64, max= 1773, avg=287.86, stdev= 4.32, samples=6826
+  lat (usec)   : 100=1.25%, 250=15.22%, 500=5.76%, 750=1.31%, 1000=0.56%
+  lat (msec)   : 2=1.25%, 4=1.15%, 10=1.08%, 20=2.27%, 50=0.71%
+  lat (msec)   : 100=7.55%, 250=21.22%, 500=27.74%, 750=9.92%, 1000=2.09%
+  lat (msec)   : 2000=0.92%
+  cpu          : usr=0.00%, sys=0.13%, ctx=31659, majf=0, minf=925
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,16496,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=34.2MiB/s (35.9MB/s), 34.2MiB/s-34.2MiB/s (35.9MB/s-35.9MB/s), io=2062MiB (2162MB), run=60274-60274msec
+
+Disk stats (read/write):
+  vda: ios=0/16528, merge=0/72, ticks=0/54428, in_queue=54428, util=93.06%
+Testing SRead on /mnt/cephfs_hdd/test with threads 64
+SREAD /mnt/cephfs_hdd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+SREAD /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+SREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=64): err= 0: pid=3760: Tue Oct 17 14:43:22 2023
+  read: IOPS=1853, BW=232MiB/s (243MB/s)(13.6GiB/60036msec)
+    clat (usec): min=397, max=342221, avg=34501.84, stdev=33159.07
+     lat (usec): min=397, max=342221, avg=34502.08, stdev=33159.11
+    clat percentiles (usec):
+     |  1.00th=[  1057],  5.00th=[  1926], 10.00th=[  2999], 20.00th=[  7504],
+     | 30.00th=[ 11731], 40.00th=[ 18744], 50.00th=[ 25560], 60.00th=[ 33817],
+     | 70.00th=[ 43254], 80.00th=[ 55837], 90.00th=[ 78119], 95.00th=[ 98042],
+     | 99.00th=[149947], 99.50th=[177210], 99.90th=[238027], 99.95th=[263193],
+     | 99.99th=[320865]
+   bw (  KiB/s): min=44764, max=1094802, per=100.00%, avg=237464.76, stdev=3068.49, samples=7616
+   iops        : min=  332, max= 8552, avg=1841.86, stdev=23.99, samples=7616
+  lat (usec)   : 500=0.02%, 750=0.19%, 1000=0.57%
+  lat (msec)   : 2=4.69%, 4=7.42%, 10=12.98%, 20=15.78%, 50=34.28%
+  lat (msec)   : 100=19.34%, 250=4.64%, 500=0.08%
+  cpu          : usr=0.01%, sys=0.05%, ctx=111449, majf=0, minf=3001
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=111306,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=232MiB/s (243MB/s), 232MiB/s-232MiB/s (243MB/s-243MB/s), io=13.6GiB (14.6GB), run=60036-60036msec
+
+Disk stats (read/write):
+  vda: ios=110421/13, merge=377/11, ticks=3800739/102, in_queue=3800841, util=99.51%
+Testing RWrite on /mnt/cephfs_hdd/test with threads 64
+RWrite /mnt/cephfs_hdd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/cephfs_hdd/test: (groupid=0, jobs=64): err= 0: pid=3827: Tue Oct 17 14:44:24 2023
+  write: IOPS=298, BW=1193KiB/s (1221kB/s)(70.4MiB/60486msec); 0 zone resets
+    clat (usec): min=73, max=1793.9k, avg=213830.18, stdev=291973.35
+     lat (usec): min=73, max=1793.9k, avg=213831.28, stdev=291974.10
+    clat percentiles (usec):
+     |  1.00th=[    114],  5.00th=[    159], 10.00th=[    293],
+     | 20.00th=[   8979], 30.00th=[  11600], 40.00th=[  27395],
+     | 50.00th=[  60556], 60.00th=[ 156238], 70.00th=[ 274727],
+     | 80.00th=[ 408945], 90.00th=[ 616563], 95.00th=[ 826278],
+     | 99.00th=[1266680], 99.50th=[1501561], 99.90th=[1753220],
+     | 99.95th=[1769997], 99.99th=[1786774]
+   bw (  KiB/s): min=  408, max=10934, per=100.00%, avg=1499.19, stdev=28.60, samples=6069
+   iops        : min=   64, max= 2732, avg=362.30, stdev= 7.17, samples=6069
+  lat (usec)   : 100=0.30%, 250=8.66%, 500=2.76%, 750=0.45%, 1000=0.30%
+  lat (msec)   : 2=0.38%, 4=0.26%, 10=13.65%, 20=9.84%, 50=11.31%
+  lat (msec)   : 100=6.85%, 250=12.96%, 500=16.90%, 750=8.95%, 1000=4.10%
+  lat (msec)   : 2000=2.35%
+  cpu          : usr=0.00%, sys=0.11%, ctx=35903, majf=0, minf=861
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,18035,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=1193KiB/s (1221kB/s), 1193KiB/s-1193KiB/s (1221kB/s-1221kB/s), io=70.4MiB (73.9MB), run=60486-60486msec
+
+Disk stats (read/write):
+  vda: ios=0/18051, merge=0/721, ticks=0/56188, in_queue=56187, util=94.47%
+Testing RRead on /mnt/cephfs_hdd/test with threads 64
+RREAD /mnt/cephfs_hdd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+RREAD /mnt/cephfs_hdd/test: Laying out IO file (1 file / 1024MiB)
+
+RREAD /mnt/cephfs_hdd/test: (groupid=0, jobs=64): err= 0: pid=3893: Tue Oct 17 14:45:30 2023
+  read: IOPS=5437, BW=21.2MiB/s (22.3MB/s)(1275MiB/60042msec)
+    clat (usec): min=231, max=179062, avg=11746.69, stdev=14021.99
+     lat (usec): min=231, max=179062, avg=11747.13, stdev=14021.96
+    clat percentiles (usec):
+     |  1.00th=[   685],  5.00th=[  1221], 10.00th=[  1631], 20.00th=[  2180],
+     | 30.00th=[  2900], 40.00th=[  4047], 50.00th=[  6194], 60.00th=[  9241],
+     | 70.00th=[ 12911], 80.00th=[ 18744], 90.00th=[ 30278], 95.00th=[ 41681],
+     | 99.00th=[ 62129], 99.50th=[ 70779], 99.90th=[111674], 99.95th=[129500],
+     | 99.99th=[154141]
+   bw (  KiB/s): min= 5090, max=102117, per=100.00%, avg=21817.34, stdev=238.70, samples=7611
+   iops        : min= 1242, max=25524, avg=5436.29, stdev=59.69, samples=7611
+  lat (usec)   : 250=0.01%, 500=0.31%, 750=1.00%, 1000=1.59%
+  lat (msec)   : 2=13.39%, 4=23.36%, 10=22.33%, 20=19.46%, 50=15.91%
+  lat (msec)   : 100=2.51%, 250=0.15%
+  cpu          : usr=0.03%, sys=0.09%, ctx=326745, majf=0, minf=841
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=326488,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=21.2MiB/s (22.3MB/s), 21.2MiB/s-21.2MiB/s (22.3MB/s-22.3MB/s), io=1275MiB (1337MB), run=60042-60042msec
+
+Disk stats (read/write):
+  vda: ios=326230/13, merge=0/19, ticks=3763393/322, in_queue=3763716, util=98.43%

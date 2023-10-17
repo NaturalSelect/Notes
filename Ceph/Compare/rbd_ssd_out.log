@@ -1,0 +1,726 @@
+Testing metadata on /mnt/rbd_ssd/mdtest_dir
+-- started at 10/17/2023 13:31:15 --
+
+mdtest-3.3.0 was launched with 1 total task(s) on 1 node(s)
+Command line used: mdtest '-n' '5000' '-u' '-z' '2' '-i' '3' '-d' '/mnt/rbd_ssd'
+Path: /mnt
+FS: 45.2 GiB   Used FS: 5.9%   Inodes: 2.9 Mi   Used Inodes: 2.4%
+
+Nodemap: 1
+1 tasks, 4998 files/directories
+
+SUMMARY rate: (of 3 iterations)
+   Operation                      Max            Min           Mean        Std Dev
+   ---------                      ---            ---           ----        -------
+   Directory creation        :      54393.113      53621.789      54073.120        328.301
+   Directory stat            :     550228.860     522667.541     540535.299      12649.630
+   Directory removal         :      75918.079      73809.065      74995.775        881.067
+   File creation             :      83807.678      82703.402      83389.259        488.875
+   File stat                 :     548966.300     547686.234     548179.785        562.147
+   File read                 :     322602.549     313995.945     319416.130       3852.332
+   File removal              :     132483.871     120322.056     127663.853       5275.539
+   Tree creation             :      70992.475      51268.029      64264.657       9191.914
+   Tree removal              :       1009.915        879.343        953.008         54.607
+-- finished at 10/17/2023 13:31:16 --
+
+Testing SWrite on /mnt/rbd_ssd/test with threads 1
+SWRITE /mnt/rbd_ssd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/rbd_ssd/test: (groupid=0, jobs=1): err= 0: pid=2268: Tue Oct 17 13:31:24 2023
+  write: IOPS=1532, BW=192MiB/s (201MB/s)(1024MiB/5346msec); 0 zone resets
+    clat (usec): min=83, max=44178, avg=646.09, stdev=2653.10
+     lat (usec): min=85, max=44361, avg=649.72, stdev=2653.52
+    clat percentiles (usec):
+     |  1.00th=[   89],  5.00th=[   92], 10.00th=[   95], 20.00th=[  102],
+     | 30.00th=[  122], 40.00th=[  143], 50.00th=[  159], 60.00th=[  178],
+     | 70.00th=[  202], 80.00th=[  260], 90.00th=[  486], 95.00th=[ 1385],
+     | 99.00th=[13042], 99.50th=[21890], 99.90th=[30802], 99.95th=[34341],
+     | 99.99th=[44303]
+   bw (  KiB/s): min=68352, max=419001, per=100.00%, avg=204047.10, stdev=100851.30, samples=10
+   iops        : min=  534, max= 3273, avg=1593.90, stdev=787.97, samples=10
+  lat (usec)   : 100=18.21%, 250=60.99%, 500=11.06%, 750=2.22%, 1000=1.21%
+  lat (msec)   : 2=2.48%, 4=0.79%, 10=0.88%, 20=1.53%, 50=0.63%
+  cpu          : usr=0.58%, sys=3.54%, ctx=8191, majf=0, minf=14
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,8192,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=192MiB/s (201MB/s), 192MiB/s-192MiB/s (201MB/s-201MB/s), io=1024MiB (1074MB), run=5346-5346msec
+
+Disk stats (read/write):
+  vdb: ios=0/8120, merge=0/1874, ticks=0/4937, in_queue=4937, util=97.01%
+Testing SRead on /mnt/rbd_ssd/test with threads 1
+SREAD /mnt/rbd_ssd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+
+SREAD /mnt/rbd_ssd/test: (groupid=0, jobs=1): err= 0: pid=2271: Tue Oct 17 13:32:27 2023
+  read: IOPS=195, BW=24.4MiB/s (25.6MB/s)(1463MiB/60005msec)
+    clat (usec): min=350, max=92947, avg=5124.42, stdev=7600.63
+     lat (usec): min=350, max=92948, avg=5124.81, stdev=7600.61
+    clat percentiles (usec):
+     |  1.00th=[  412],  5.00th=[  553], 10.00th=[  742], 20.00th=[  840],
+     | 30.00th=[  955], 40.00th=[ 1037], 50.00th=[ 1270], 60.00th=[ 1844],
+     | 70.00th=[ 2474], 80.00th=[10945], 90.00th=[16188], 95.00th=[21890],
+     | 99.00th=[32900], 99.50th=[35914], 99.90th=[45351], 99.95th=[57934],
+     | 99.99th=[83362]
+   bw (  KiB/s): min= 4864, max=110592, per=100.00%, avg=25053.34, stdev=18097.26, samples=119
+   iops        : min=   38, max=  864, avg=195.70, stdev=141.36, samples=119
+  lat (usec)   : 500=4.03%, 750=6.81%, 1000=24.78%
+  lat (msec)   : 2=27.99%, 4=9.35%, 10=3.76%, 20=15.74%, 50=7.46%
+  lat (msec)   : 100=0.08%
+  cpu          : usr=0.06%, sys=0.35%, ctx=11703, majf=0, minf=46
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=11703,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=24.4MiB/s (25.6MB/s), 24.4MiB/s-24.4MiB/s (25.6MB/s-25.6MB/s), io=1463MiB (1534MB), run=60005-60005msec
+
+Disk stats (read/write):
+  vdb: ios=11664/94, merge=0/1767, ticks=59415/135, in_queue=59550, util=99.80%
+Testing RWrite on /mnt/rbd_ssd/test with threads 1
+RWrite /mnt/rbd_ssd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/rbd_ssd/test: (groupid=0, jobs=1): err= 0: pid=2275: Tue Oct 17 13:33:29 2023
+  write: IOPS=1325, BW=5302KiB/s (5430kB/s)(311MiB/60011msec); 0 zone resets
+    clat (usec): min=52, max=68826, avg=751.73, stdev=3181.27
+     lat (usec): min=53, max=68826, avg=752.16, stdev=3181.49
+    clat percentiles (usec):
+     |  1.00th=[   78],  5.00th=[   91], 10.00th=[  106], 20.00th=[  120],
+     | 30.00th=[  137], 40.00th=[  151], 50.00th=[  172], 60.00th=[  200],
+     | 70.00th=[  243], 80.00th=[  322], 90.00th=[  594], 95.00th=[ 1172],
+     | 99.00th=[21103], 99.50th=[22414], 99.90th=[34866], 99.95th=[41157],
+     | 99.99th=[53216]
+   bw (  KiB/s): min=  200, max=27656, per=100.00%, avg=5320.99, stdev=4384.00, samples=119
+   iops        : min=   50, max= 6914, avg=1330.19, stdev=1096.02, samples=119
+  lat (usec)   : 100=7.60%, 250=63.80%, 500=16.59%, 750=4.23%, 1000=1.96%
+  lat (msec)   : 2=2.19%, 4=0.60%, 10=0.55%, 20=1.41%, 50=1.06%
+  lat (msec)   : 100=0.02%
+  cpu          : usr=0.32%, sys=3.01%, ctx=79440, majf=0, minf=13
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,79552,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=5302KiB/s (5430kB/s), 5302KiB/s-5302KiB/s (5430kB/s-5430kB/s), io=311MiB (326MB), run=60011-60011msec
+
+Disk stats (read/write):
+  vdb: ios=0/79431, merge=0/2202, ticks=0/57986, in_queue=57986, util=99.51%
+Testing RRead on /mnt/rbd_ssd/test with threads 1
+RREAD /mnt/rbd_ssd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+fio-3.19
+Starting 1 process
+
+RREAD /mnt/rbd_ssd/test: (groupid=0, jobs=1): err= 0: pid=2278: Tue Oct 17 13:34:30 2023
+  read: IOPS=190, BW=763KiB/s (782kB/s)(44.7MiB/60007msec)
+    clat (usec): min=237, max=46021, avg=5238.05, stdev=7604.39
+     lat (usec): min=237, max=46021, avg=5238.32, stdev=7604.41
+    clat percentiles (usec):
+     |  1.00th=[  293],  5.00th=[  322], 10.00th=[  338], 20.00th=[  371],
+     | 30.00th=[  400], 40.00th=[  502], 50.00th=[  644], 60.00th=[ 1074],
+     | 70.00th=[ 7767], 80.00th=[11207], 90.00th=[17695], 95.00th=[21890],
+     | 99.00th=[28967], 99.50th=[32900], 99.90th=[39060], 99.95th=[43254],
+     | 99.99th=[44827]
+   bw (  KiB/s): min=  176, max= 6792, per=100.00%, avg=766.99, stdev=1065.19, samples=119
+   iops        : min=   44, max= 1698, avg=191.67, stdev=266.31, samples=119
+  lat (usec)   : 250=0.09%, 500=39.85%, 750=14.51%, 1000=4.19%
+  lat (msec)   : 2=6.81%, 4=2.92%, 10=4.62%, 20=19.54%, 50=7.48%
+  cpu          : usr=0.04%, sys=0.19%, ctx=11451, majf=0, minf=12
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=11450,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=763KiB/s (782kB/s), 763KiB/s-763KiB/s (782kB/s-782kB/s), io=44.7MiB (46.9MB), run=60007-60007msec
+
+Disk stats (read/write):
+  vdb: ios=11435/13, merge=0/561, ticks=59633/96, in_queue=59729, util=99.92%
+Testing SWrite on /mnt/rbd_ssd/test with threads 4
+SWRITE /mnt/rbd_ssd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/rbd_ssd/test: (groupid=0, jobs=4): err= 0: pid=2283: Tue Oct 17 13:35:19 2023
+  write: IOPS=725, BW=90.6MiB/s (95.0MB/s)(4096MiB/45188msec); 0 zone resets
+    clat (usec): min=60, max=841412, avg=5446.14, stdev=16511.18
+     lat (usec): min=64, max=841483, avg=5452.14, stdev=16511.57
+    clat percentiles (usec):
+     |  1.00th=[    84],  5.00th=[   103], 10.00th=[   139], 20.00th=[   243],
+     | 30.00th=[   445], 40.00th=[   635], 50.00th=[   881], 60.00th=[  1270],
+     | 70.00th=[  1958], 80.00th=[  3163], 90.00th=[ 12780], 95.00th=[ 35914],
+     | 99.00th=[ 73925], 99.50th=[ 85459], 99.90th=[109577], 99.95th=[131597],
+     | 99.99th=[742392]
+   bw (  KiB/s): min= 1530, max=379748, per=99.09%, avg=91977.52, stdev=20240.13, samples=353
+   iops        : min=    8, max= 2966, avg=718.16, stdev=158.12, samples=353
+  lat (usec)   : 100=4.51%, 250=15.86%, 500=12.24%, 750=12.90%, 1000=8.16%
+  lat (msec)   : 2=16.91%, 4=12.32%, 10=5.68%, 20=3.50%, 50=5.08%
+  lat (msec)   : 100=2.67%, 250=0.15%, 500=0.01%, 750=0.01%, 1000=0.01%
+  cpu          : usr=0.12%, sys=0.79%, ctx=64658, majf=0, minf=61
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,32768,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=90.6MiB/s (95.0MB/s), 90.6MiB/s-90.6MiB/s (95.0MB/s-95.0MB/s), io=4096MiB (4295MB), run=45188-45188msec
+
+Disk stats (read/write):
+  vdb: ios=0/32375, merge=0/74, ticks=0/44102, in_queue=44102, util=98.88%
+Testing SRead on /mnt/rbd_ssd/test with threads 4
+SREAD /mnt/rbd_ssd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+
+SREAD /mnt/rbd_ssd/test: (groupid=0, jobs=4): err= 0: pid=2309: Tue Oct 17 13:36:20 2023
+  read: IOPS=660, BW=82.5MiB/s (86.5MB/s)(4951MiB/60002msec)
+    clat (usec): min=360, max=106123, avg=6055.17, stdev=8893.74
+     lat (usec): min=360, max=106123, avg=6055.61, stdev=8893.71
+    clat percentiles (usec):
+     |  1.00th=[  619],  5.00th=[  873], 10.00th=[ 1004], 20.00th=[ 1237],
+     | 30.00th=[ 1483], 40.00th=[ 1696], 50.00th=[ 1942], 60.00th=[ 2278],
+     | 70.00th=[ 3097], 80.00th=[11076], 90.00th=[21627], 95.00th=[23987],
+     | 99.00th=[38536], 99.50th=[43779], 99.90th=[58983], 99.95th=[70779],
+     | 99.99th=[95945]
+   bw (  KiB/s): min=17152, max=323584, per=100.00%, avg=84807.03, stdev=13888.34, samples=476
+   iops        : min=  134, max= 2528, avg=662.24, stdev=108.49, samples=476
+  lat (usec)   : 500=0.27%, 750=2.24%, 1000=7.44%
+  lat (msec)   : 2=42.58%, 4=21.02%, 10=4.44%, 20=10.95%, 50=10.80%
+  lat (msec)   : 100=0.26%, 250=0.01%
+  cpu          : usr=0.05%, sys=0.29%, ctx=39612, majf=0, minf=180
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=39611,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=82.5MiB/s (86.5MB/s), 82.5MiB/s-82.5MiB/s (86.5MB/s-86.5MB/s), io=4951MiB (5192MB), run=60002-60002msec
+
+Disk stats (read/write):
+  vdb: ios=39431/7, merge=122/7, ticks=236753/9, in_queue=236763, util=99.89%
+Testing RWrite on /mnt/rbd_ssd/test with threads 4
+RWrite /mnt/rbd_ssd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/rbd_ssd/test: (groupid=0, jobs=4): err= 0: pid=2316: Tue Oct 17 13:37:22 2023
+  write: IOPS=643, BW=2575KiB/s (2636kB/s)(151MiB/60090msec); 0 zone resets
+    clat (usec): min=56, max=215861, avg=6205.18, stdev=16759.37
+     lat (usec): min=56, max=215861, avg=6205.95, stdev=16760.19
+    clat percentiles (usec):
+     |  1.00th=[    89],  5.00th=[   114], 10.00th=[   135], 20.00th=[   184],
+     | 30.00th=[   293], 40.00th=[   523], 50.00th=[   676], 60.00th=[  1004],
+     | 70.00th=[  1778], 80.00th=[  3294], 90.00th=[ 17433], 95.00th=[ 41681],
+     | 99.00th=[ 87557], 99.50th=[102237], 99.90th=[131597], 99.95th=[139461],
+     | 99.99th=[166724]
+   bw (  KiB/s): min=  128, max=17824, per=100.00%, avg=2591.17, stdev=685.81, samples=476
+   iops        : min=   32, max= 4456, avg=647.55, stdev=171.45, samples=476
+  lat (usec)   : 100=2.47%, 250=24.57%, 500=11.48%, 750=14.35%, 1000=7.10%
+  lat (msec)   : 2=12.16%, 4=9.95%, 10=5.55%, 20=2.95%, 50=5.45%
+  lat (msec)   : 100=3.42%, 250=0.55%
+  cpu          : usr=0.06%, sys=0.72%, ctx=76598, majf=0, minf=47
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,38678,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=2575KiB/s (2636kB/s), 2575KiB/s-2575KiB/s (2636kB/s-2636kB/s), io=151MiB (158MB), run=60090-60090msec
+
+Disk stats (read/write):
+  vdb: ios=0/38723, merge=0/1461, ticks=0/58759, in_queue=58760, util=98.92%
+Testing RRead on /mnt/rbd_ssd/test with threads 4
+RREAD /mnt/rbd_ssd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 4 processes
+RREAD /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RREAD /mnt/rbd_ssd/test: (groupid=0, jobs=4): err= 0: pid=2326: Tue Oct 17 13:38:25 2023
+  read: IOPS=769, BW=3077KiB/s (3151kB/s)(180MiB/60027msec)
+    clat (usec): min=208, max=81943, avg=5173.51, stdev=8707.39
+     lat (usec): min=208, max=81944, avg=5173.85, stdev=8707.43
+    clat percentiles (usec):
+     |  1.00th=[  330],  5.00th=[  396], 10.00th=[  433], 20.00th=[  490],
+     | 30.00th=[  562], 40.00th=[  660], 50.00th=[  791], 60.00th=[ 1020],
+     | 70.00th=[ 2147], 80.00th=[10945], 90.00th=[17957], 95.00th=[23987],
+     | 99.00th=[37487], 99.50th=[43779], 99.90th=[56886], 99.95th=[63701],
+     | 99.99th=[74974]
+   bw (  KiB/s): min=  635, max=14440, per=100.00%, avg=3086.74, stdev=624.60, samples=476
+   iops        : min=  158, max= 3610, avg=771.28, stdev=156.15, samples=476
+  lat (usec)   : 250=0.06%, 500=21.47%, 750=25.59%, 1000=12.22%
+  lat (msec)   : 2=10.12%, 4=3.55%, 10=5.28%, 20=13.27%, 50=8.21%
+  lat (msec)   : 100=0.23%
+  cpu          : usr=0.06%, sys=0.36%, ctx=46243, majf=0, minf=57
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=46174,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=3077KiB/s (3151kB/s), 3077KiB/s-3077KiB/s (3151kB/s-3151kB/s), io=180MiB (189MB), run=60027-60027msec
+
+Disk stats (read/write):
+  vdb: ios=46044/11, merge=0/17, ticks=237228/127, in_queue=237355, util=99.41%
+Testing SWrite on /mnt/rbd_ssd/test with threads 16
+SWRITE /mnt/rbd_ssd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/rbd_ssd/test: (groupid=0, jobs=16): err= 0: pid=2334: Tue Oct 17 13:39:29 2023
+  write: IOPS=346, BW=43.3MiB/s (45.4MB/s)(2602MiB/60126msec); 0 zone resets
+    clat (usec): min=66, max=512829, avg=46165.06, stdev=67795.70
+     lat (usec): min=68, max=512833, avg=46176.20, stdev=67796.28
+    clat percentiles (usec):
+     |  1.00th=[    97],  5.00th=[   147], 10.00th=[   200], 20.00th=[  3654],
+     | 30.00th=[  7570], 40.00th=[ 10683], 50.00th=[ 15926], 60.00th=[ 27919],
+     | 70.00th=[ 43779], 80.00th=[ 72877], 90.00th=[139461], 95.00th=[206570],
+     | 99.00th=[304088], 99.50th=[341836], 99.90th=[421528], 99.95th=[455082],
+     | 99.99th=[480248]
+   bw (  KiB/s): min= 4608, max=214249, per=100.00%, avg=44511.66, stdev=2437.03, samples=1904
+   iops        : min=   36, max= 1670, avg=345.54, stdev=19.00, samples=1904
+  lat (usec)   : 100=1.14%, 250=11.45%, 500=3.81%, 750=0.77%, 1000=0.40%
+  lat (msec)   : 2=0.62%, 4=2.16%, 10=17.35%, 20=15.99%, 50=18.96%
+  lat (msec)   : 100=12.42%, 250=12.49%, 500=2.45%, 750=0.01%
+  cpu          : usr=0.01%, sys=0.26%, ctx=40902, majf=0, minf=243
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,20812,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=43.3MiB/s (45.4MB/s), 43.3MiB/s-43.3MiB/s (45.4MB/s-45.4MB/s), io=2602MiB (2728MB), run=60126-60126msec
+
+Disk stats (read/write):
+  vdb: ios=0/20829, merge=0/69, ticks=0/58010, in_queue=58010, util=97.32%
+Testing SRead on /mnt/rbd_ssd/test with threads 16
+SREAD /mnt/rbd_ssd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+SREAD /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+SREAD /mnt/rbd_ssd/test: (groupid=0, jobs=16): err= 0: pid=2353: Tue Oct 17 13:40:34 2023
+  read: IOPS=1595, BW=199MiB/s (209MB/s)(11.7GiB/60024msec)
+    clat (usec): min=371, max=290843, avg=10022.02, stdev=13793.68
+     lat (usec): min=371, max=290843, avg=10022.32, stdev=13793.69
+    clat percentiles (usec):
+     |  1.00th=[   611],  5.00th=[   889], 10.00th=[  1106], 20.00th=[  1483],
+     | 30.00th=[  1893], 40.00th=[  2507], 50.00th=[  3884], 60.00th=[  6849],
+     | 70.00th=[ 11207], 80.00th=[ 16909], 90.00th=[ 26870], 95.00th=[ 35914],
+     | 99.00th=[ 58983], 99.50th=[ 72877], 99.90th=[117965], 99.95th=[141558],
+     | 99.99th=[270533]
+   bw (  KiB/s): min=24832, max=670461, per=99.98%, avg=204137.12, stdev=7374.20, samples=1904
+   iops        : min=  194, max= 5236, avg=1592.68, stdev=57.63, samples=1904
+  lat (usec)   : 500=0.25%, 750=2.37%, 1000=4.86%
+  lat (msec)   : 2=24.65%, 4=18.40%, 10=16.09%, 20=16.78%, 50=14.77%
+  lat (msec)   : 100=1.64%, 250=0.16%, 500=0.02%
+  cpu          : usr=0.03%, sys=0.17%, ctx=95807, majf=0, minf=725
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=95748,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=199MiB/s (209MB/s), 199MiB/s-199MiB/s (209MB/s-209MB/s), io=11.7GiB (12.5GB), run=60024-60024msec
+
+Disk stats (read/write):
+  vdb: ios=95080/10, merge=217/11, ticks=949429/140, in_queue=949569, util=99.78%
+Testing RWrite on /mnt/rbd_ssd/test with threads 16
+RWrite /mnt/rbd_ssd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/rbd_ssd/test: (groupid=0, jobs=16): err= 0: pid=2378: Tue Oct 17 13:41:36 2023
+  write: IOPS=516, BW=2066KiB/s (2116kB/s)(121MiB/60012msec); 0 zone resets
+    clat (usec): min=62, max=566885, avg=30968.17, stdev=66665.20
+     lat (usec): min=62, max=566885, avg=30968.88, stdev=66666.28
+    clat percentiles (usec):
+     |  1.00th=[    87],  5.00th=[   122], 10.00th=[   161], 20.00th=[  1713],
+     | 30.00th=[  2212], 40.00th=[  2671], 50.00th=[  4080], 60.00th=[  6194],
+     | 70.00th=[ 13304], 80.00th=[ 37487], 90.00th=[ 93848], 95.00th=[177210],
+     | 99.00th=[333448], 99.50th=[396362], 99.90th=[484443], 99.95th=[497026],
+     | 99.99th=[530580]
+   bw (  KiB/s): min=  114, max=17124, per=100.00%, avg=2073.13, stdev=164.46, samples=1903
+   iops        : min=   18, max= 4281, avg=516.92, stdev=41.14, samples=1903
+  lat (usec)   : 100=2.11%, 250=12.81%, 500=2.63%, 750=0.46%, 1000=0.25%
+  lat (msec)   : 2=5.34%, 4=25.90%, 10=16.99%, 20=6.90%, 50=9.86%
+  lat (msec)   : 100=7.38%, 250=6.87%, 500=2.45%, 750=0.04%
+  cpu          : usr=0.01%, sys=0.33%, ctx=60846, majf=0, minf=195
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,30998,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=2066KiB/s (2116kB/s), 2066KiB/s-2066KiB/s (2116kB/s-2116kB/s), io=121MiB (127MB), run=60012-60012msec
+
+Disk stats (read/write):
+  vdb: ios=0/30984, merge=0/1142, ticks=0/57068, in_queue=57069, util=96.91%
+Testing RRead on /mnt/rbd_ssd/test with threads 16
+RREAD /mnt/rbd_ssd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 16 processes
+RREAD /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RREAD /mnt/rbd_ssd/test: (groupid=0, jobs=16): err= 0: pid=2400: Tue Oct 17 13:42:40 2023
+  read: IOPS=1715, BW=6861KiB/s (7026kB/s)(402MiB/60026msec)
+    clat (usec): min=194, max=166860, avg=9291.33, stdev=13113.05
+     lat (usec): min=194, max=166860, avg=9291.61, stdev=13113.03
+    clat percentiles (usec):
+     |  1.00th=[   429],  5.00th=[   603], 10.00th=[   742], 20.00th=[   873],
+     | 30.00th=[  1057], 40.00th=[  1434], 50.00th=[  2114], 60.00th=[  4015],
+     | 70.00th=[ 11207], 80.00th=[ 18482], 90.00th=[ 27657], 95.00th=[ 35390],
+     | 99.00th=[ 55313], 99.50th=[ 63701], 99.90th=[ 86508], 99.95th=[ 99091],
+     | 99.99th=[164627]
+   bw (  KiB/s): min= 1554, max=56171, per=100.00%, avg=6870.71, stdev=388.81, samples=1904
+   iops        : min=  387, max=14042, avg=1716.42, stdev=97.21, samples=1904
+  lat (usec)   : 250=0.02%, 500=2.32%, 750=8.01%, 1000=17.81%
+  lat (msec)   : 2=20.50%, 4=11.32%, 10=7.13%, 20=14.61%, 50=16.76%
+  lat (msec)   : 100=1.50%, 250=0.05%
+  cpu          : usr=0.03%, sys=0.13%, ctx=103059, majf=0, minf=198
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=102967,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=6861KiB/s (7026kB/s), 6861KiB/s-6861KiB/s (7026kB/s-7026kB/s), io=402MiB (422MB), run=60026-60026msec
+
+Disk stats (read/write):
+  vdb: ios=102836/11, merge=0/19, ticks=949121/67, in_queue=949187, util=99.30%
+Testing SWrite on /mnt/rbd_ssd/test with threads 64
+SWRITE /mnt/rbd_ssd/test: (g=0): rw=write, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+SWRITE /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+SWRITE /mnt/rbd_ssd/test: (groupid=0, jobs=64): err= 0: pid=2419: Tue Oct 17 13:43:42 2023
+  write: IOPS=196, BW=24.6MiB/s (25.8MB/s)(1476MiB/60112msec); 0 zone resets
+    clat (usec): min=68, max=1338.7k, avg=325474.85, stdev=273837.97
+     lat (usec): min=73, max=1339.4k, avg=325483.68, stdev=273839.12
+    clat percentiles (usec):
+     |  1.00th=[    105],  5.00th=[    200], 10.00th=[    922],
+     | 20.00th=[  56886], 30.00th=[ 119014], 40.00th=[ 187696],
+     | 50.00th=[ 274727], 60.00th=[ 362808], 70.00th=[ 463471],
+     | 80.00th=[ 566232], 90.00th=[ 734004], 95.00th=[ 826278],
+     | 99.00th=[1035994], 99.50th=[1149240], 99.90th=[1266680],
+     | 99.95th=[1317012], 99.99th=[1333789]
+   bw (  KiB/s): min=14583, max=150149, per=100.00%, avg=29853.60, stdev=364.46, samples=6396
+   iops        : min=   64, max= 1171, avg=224.97, stdev= 2.84, samples=6396
+  lat (usec)   : 100=0.71%, 250=5.99%, 500=2.56%, 750=0.42%, 1000=0.40%
+  lat (msec)   : 2=0.69%, 4=0.60%, 10=1.03%, 20=3.73%, 50=2.09%
+  lat (msec)   : 100=7.25%, 250=21.46%, 500=26.68%, 750=17.20%, 1000=7.98%
+  lat (msec)   : 2000=1.19%
+  cpu          : usr=0.00%, sys=0.06%, ctx=23510, majf=0, minf=925
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,11811,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=24.6MiB/s (25.8MB/s), 24.6MiB/s-24.6MiB/s (25.8MB/s-25.8MB/s), io=1476MiB (1548MB), run=60112-60112msec
+
+Disk stats (read/write):
+  vdb: ios=0/11783, merge=0/68, ticks=0/57389, in_queue=57390, util=96.22%
+Testing SRead on /mnt/rbd_ssd/test with threads 64
+SREAD /mnt/rbd_ssd/test: (g=0): rw=read, bs=(R) 128KiB-128KiB, (W) 128KiB-128KiB, (T) 128KiB-128KiB, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+SREAD /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+SREAD /mnt/rbd_ssd/test: (groupid=0, jobs=64): err= 0: pid=2485: Tue Oct 17 13:44:48 2023
+  read: IOPS=3008, BW=376MiB/s (394MB/s)(22.1GiB/60092msec)
+    clat (usec): min=390, max=429764, avg=21242.81, stdev=27157.21
+     lat (usec): min=390, max=429764, avg=21243.23, stdev=27157.37
+    clat percentiles (usec):
+     |  1.00th=[   840],  5.00th=[  1369], 10.00th=[  1958], 20.00th=[  3261],
+     | 30.00th=[  4883], 40.00th=[  7373], 50.00th=[ 11469], 60.00th=[ 17433],
+     | 70.00th=[ 25035], 80.00th=[ 34866], 90.00th=[ 51119], 95.00th=[ 68682],
+     | 99.00th=[120062], 99.50th=[152044], 99.90th=[287310], 99.95th=[320865],
+     | 99.99th=[354419]
+   bw (  KiB/s): min=65795, max=2031851, per=100.00%, avg=386854.67, stdev=5181.55, samples=7588
+   iops        : min=  487, max=15857, avg=3001.03, stdev=40.52, samples=7588
+  lat (usec)   : 500=0.03%, 750=0.57%, 1000=1.36%
+  lat (msec)   : 2=8.41%, 4=14.60%, 10=21.63%, 20=16.62%, 50=26.23%
+  lat (msec)   : 100=8.84%, 250=1.53%, 500=0.19%
+  cpu          : usr=0.02%, sys=0.08%, ctx=180913, majf=0, minf=2902
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=180781,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=376MiB/s (394MB/s), 376MiB/s-376MiB/s (394MB/s-394MB/s), io=22.1GiB (23.7GB), run=60092-60092msec
+
+Disk stats (read/write):
+  vdb: ios=180663/9, merge=108/7, ticks=3810377/157, in_queue=3810534, util=99.54%
+Testing RWrite on /mnt/rbd_ssd/test with threads 64
+RWrite /mnt/rbd_ssd/test: (g=0): rw=randwrite, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+RWrite /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RWrite /mnt/rbd_ssd/test: (groupid=0, jobs=64): err= 0: pid=2552: Tue Oct 17 13:45:50 2023
+  write: IOPS=324, BW=1297KiB/s (1328kB/s)(76.3MiB/60216msec); 0 zone resets
+    clat (usec): min=76, max=1678.4k, avg=197129.54, stdev=306711.84
+     lat (usec): min=76, max=1678.4k, avg=197130.08, stdev=306711.89
+    clat percentiles (usec):
+     |  1.00th=[    115],  5.00th=[    188], 10.00th=[    371],
+     | 20.00th=[   9372], 30.00th=[  10028], 40.00th=[  11076],
+     | 50.00th=[  21365], 60.00th=[  52167], 70.00th=[ 219153],
+     | 80.00th=[ 392168], 90.00th=[ 666895], 95.00th=[ 910164],
+     | 99.00th=[1216349], 99.50th=[1333789], 99.90th=[1501561],
+     | 99.95th=[1635779], 99.99th=[1669333]
+   bw (  KiB/s): min=  427, max=17536, per=100.00%, avg=1706.41, stdev=38.92, samples=5762
+   iops        : min=   64, max= 4384, avg=412.93, stdev= 9.78, samples=5762
+  lat (usec)   : 100=0.34%, 250=7.21%, 500=3.35%, 750=0.55%, 1000=0.38%
+  lat (msec)   : 2=0.54%, 4=0.30%, 10=16.97%, 20=19.93%, 50=9.87%
+  lat (msec)   : 100=4.64%, 250=7.74%, 500=12.71%, 750=7.34%, 1000=4.61%
+  lat (msec)   : 2000=3.52%
+  cpu          : usr=0.00%, sys=0.13%, ctx=38849, majf=0, minf=919
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=0,19523,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+  WRITE: bw=1297KiB/s (1328kB/s), 1297KiB/s-1297KiB/s (1328kB/s-1328kB/s), io=76.3MiB (79.0MB), run=60216-60216msec
+
+Disk stats (read/write):
+  vdb: ios=0/19513, merge=0/760, ticks=0/55171, in_queue=55171, util=93.36%
+Testing RRead on /mnt/rbd_ssd/test with threads 64
+RREAD /mnt/rbd_ssd/test: (g=0): rw=randread, bs=(R) 4096B-4096B, (W) 4096B-4096B, (T) 4096B-4096B, ioengine=psync, iodepth=1
+...
+fio-3.19
+Starting 64 processes
+RREAD /mnt/rbd_ssd/test: Laying out IO file (1 file / 1024MiB)
+
+RREAD /mnt/rbd_ssd/test: (groupid=0, jobs=64): err= 0: pid=2619: Tue Oct 17 13:46:55 2023
+  read: IOPS=4416, BW=17.3MiB/s (18.1MB/s)(1036MiB/60073msec)
+    clat (usec): min=188, max=213050, avg=14468.44, stdev=17136.77
+     lat (usec): min=188, max=213050, avg=14469.02, stdev=17137.08
+    clat percentiles (usec):
+     |  1.00th=[   668],  5.00th=[  1254], 10.00th=[  1729], 20.00th=[  2540],
+     | 30.00th=[  3851], 40.00th=[  6063], 50.00th=[  8848], 60.00th=[ 11994],
+     | 70.00th=[ 15926], 80.00th=[ 22938], 90.00th=[ 35914], 95.00th=[ 46924],
+     | 99.00th=[ 78119], 99.50th=[ 96994], 99.90th=[154141], 99.95th=[170918],
+     | 99.99th=[185598]
+   bw (  KiB/s): min= 3703, max=63920, per=100.00%, avg=17726.59, stdev=144.45, samples=7604
+   iops        : min=  925, max=15971, avg=4417.43, stdev=36.12, samples=7604
+  lat (usec)   : 250=0.01%, 500=0.40%, 750=1.00%, 1000=1.47%
+  lat (msec)   : 2=10.46%, 4=17.50%, 10=23.11%, 20=22.44%, 50=19.62%
+  lat (msec)   : 100=3.54%, 250=0.45%
+  cpu          : usr=0.02%, sys=0.07%, ctx=265453, majf=0, minf=850
+  IO depths    : 1=100.0%, 2=0.0%, 4=0.0%, 8=0.0%, 16=0.0%, 32=0.0%, >=64=0.0%
+     submit    : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     complete  : 0=0.0%, 4=100.0%, 8=0.0%, 16=0.0%, 32=0.0%, 64=0.0%, >=64=0.0%
+     issued rwts: total=265329,0,0,0 short=0,0,0,0 dropped=0,0,0,0
+     latency   : target=0, window=0, percentile=100.00%, depth=1
+
+Run status group 0 (all jobs):
+   READ: bw=17.3MiB/s (18.1MB/s), 17.3MiB/s-17.3MiB/s (18.1MB/s-18.1MB/s), io=1036MiB (1087MB), run=60073-60073msec
+
+Disk stats (read/write):
+  vdb: ios=265322/11, merge=0/17, ticks=3790907/495, in_queue=3791402, util=98.57%
