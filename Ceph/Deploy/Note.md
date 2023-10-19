@@ -507,3 +507,11 @@ ceph -s
 ```sh
 ceph orch upgrade start --image <image-name> --daemon-types mgr,mon --hosts host1,host2
 ```
+
+### Private Image
+
+登录私有仓库。
+
+```sh
+cephadm registry-login [-h] --registry-url [REGISTRY URL] --registry-username [REGISTRY_USERNAM] --registry-password [REGISTRY_PASSWORD]
+```
