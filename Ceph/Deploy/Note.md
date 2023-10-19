@@ -20,6 +20,8 @@ curl --silent --remote-name --location https://download.ceph.com/rpm-${CEPH_RELE
 
 其中`${CEPH_RELEASE}`为ceph版本，例如：`18.2.0`
 
+*NOTE： `CEPHADM_IMAGE` 环境变量和`--image`参数可以控制使用哪个镜像。*
+
 修改权限并安装：
 
 ```sh
@@ -516,4 +518,24 @@ ceph orch upgrade start --image <image-name> --daemon-types mgr,mon --hosts host
 
 ```sh
 cephadm registry-login [-h] --registry-url [REGISTRY URL] --registry-username [REGISTRY_USERNAM] --registry-password [REGISTRY_PASSWORD]
+```
+
+### Clean Cluster
+
+先停止集群。
+
+```sh
+ceph orch pause
+```
+
+删除集群，需要在每一个机器上执行。
+
+```sh
+./cephadm rm-cluster --force --zap-osds --fsid [FSID]
+```
+
+获取FSID。
+
+```sh
+ceph fsid
 ```
