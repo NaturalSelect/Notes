@@ -508,6 +508,8 @@ ceph -s
 ceph orch upgrade start --image <image-name> --daemon-types mgr,mon --hosts host1,host2
 ```
 
+*NOTE：目前cephadm摘要算法存在问题（[ISSUE 53175](https://tracker.ceph.com/issues/53175)），使用`https://tracker.ceph.com/issues/53175` bypass 摘要算法。*
+
 ### Private Image
 
 登录私有仓库。
