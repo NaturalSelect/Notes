@@ -469,3 +469,41 @@ rbd pool init [pool-name]
 rbd create --size [SIZE] [POOL]/[IMAGE]
 ```
 
+## Upgrade
+
+开始升级集群。
+
+```sh
+ceph orch upgrade start --image quay.io/ceph-ci/ceph:recent-git-branch-name
+```
+
+*其中： `--image`是镜像。*
+
+停止升级。
+
+```sh
+ceph orch upgrade stop
+```
+
+查看日志。
+
+```sh
+ceph -W cephadm
+```
+
+在升级过程中，ceph 状态输出中会显示一个进度条。它 看起来像这样：
+
+```sh
+ceph -s
+
+[...]
+  progress:
+    Upgrade to docker.io/ceph/ceph:v15.2.1 (00h 20m 12s)
+      [=======.....................] (time remaining: 01h 43m 31s)
+```
+
+交错升级。
+
+```sh
+ceph orch upgrade start --image <image-name> --daemon-types mgr,mon --hosts host1,host2
+```
