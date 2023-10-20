@@ -539,3 +539,9 @@ ceph orch pause
 ```sh
 ceph fsid
 ```
+
+删除cephadm和ceph-common
+
+```sh
+yum remove cephadm ceph-common
+```
