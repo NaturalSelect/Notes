@@ -545,3 +545,28 @@ ceph fsid
 ```sh
 yum remove cephadm ceph-common
 ```
+
+### Get & Set Images
+
+镜像类型：
+* container_image_prometheus
+* container_image_grafana
+* container_image_alertmanager
+* container_image_node_exporter
+
+查看images。
+
+```sh
+#!/bin/bash
+
+for i in {container_image_prometheus,container_image_grafana,container_image_alertmanager,container_image_node_exporter}
+do
+	echo "$i image:"
+	ceph config get mgr mgr/cephadm/$i
+done
+```
+
+设置images
+```sh
+ceph config set mgr mgr/cephadm/[IMAGE_TYPE] [IMAGE]
+```
