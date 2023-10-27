@@ -11,8 +11,8 @@ Monitor 是集群的Master，负责进行验证和集群管理。
 ## Bootstrap
 
 一个Monitor有两个Messenger对象：
-* `messenger` 成员。
-* `mgr_messenger` 成员。
+* `messenger` 成员 - 服务外部。
+* `mgr_messenger` 成员 - paxos peer。
 
 
 ```cpp
@@ -192,6 +192,8 @@ void Monitor::probe_timeout(int r)
 ```
 
 ## Dispatch & Handle Request
+
+拿到请求后，Mon将请求分发到不同的paxos services。
 
 ```cpp
 void Monitor::dispatch_op(MonOpRequestRef op)
@@ -464,7 +466,7 @@ void Monitor::dispatch_op(MonOpRequestRef op)
 
 ## Paxos Service
 
-主体业务逻辑在`paxos_service`成员中。
+业务逻辑在`paxos_service`成员中。
 
 ```cpp
 std::array<std::unique_ptr<PaxosService>, PAXOS_NUM> paxos_service;
@@ -1157,12 +1159,3 @@ int MDSMonitor::filesystem_command(
   return r;
 }
 ```
-
-## CRUSH
-
-
-
-## Placement Group
-
-## Pool
-
