@@ -5400,4 +5400,1206 @@ boost::statechart::result PeeringState::Stray::react(const MLogRec &logevt) {
 
 在函数`OSD::handle_osd_map`处理osd map的变化，该函数调用`consume_map`，对每一个PG调用`enqueue_peering_evt`，使其进入Peering状态。
 
+## Recover
+
+### Resource Reserve
+
+在数据修复的过程中，为了控制一个OSD上正在修复的PG最大数目，需要资源预约，在主OSD上和从OSD上都需要预约。如果没有预约成功，需要阻塞等待。一个OSD能同时修复的最大PG数在配置选项`osd_max_backfills`中设置，默认值为`1`。
+
+`AsyncReserver`用来管理资源预约，其模板参数`<T>`为要预约的资源类型。该类实现了异步的资源预约。当成功完成资源预约后，就调用注册的回调函数通知调用方预约成功。
+
+### State Transit
+
+![F16](./F16.png)
+
+当PG进入Active状态后，就进入默认的子状态Activating。
+
+数据修复的状态转换过程如下所示：
+* 当进入Activating状态后，如果此时所有的副本都完整，不需要修复，其状态转移过程如下：
+  * Activating状态接收到`AllReplicatedRecovered`事件，直接转换到Recovered状态。
+  * Recovered状态接收到`GoClean`事件，整个PG转入Clean状态。
+* 当进入Activating状态后，没有Recovery过程，只需要Backfill过程的情况：
+  * Activating状态直接接收到`RequestBackfill`事件，进入WaitLocalBackfillReservede状态。
+  * 当WaitLocalBackfillReservede状态接收到`LocalBackfillReserved`事件后，意味着本地资源预约成功，转入WaitRemoteBackfillReserved状态。
+  * 所有副本资源预约成功后，主PG就会接收到`AllBackfillsReserved`事件，进入Backfilling状态，开始实际数据Backfill操作过程。
+  * Backfilling状态接收Backfilled事件，标志Backfill过程完成，进入Recovered状态。
+  * 异常处理：当在状态WaitRemotBackfillReserved和Backfilling接收到`RemoteReservationRejected`事件时，表明资源预约失败，进入NotBackfilling状态，再次等待`RequestBackfilling`事件来重新发起Backfill过程。
+* 当PG既需要Recovery过程，也可能需要Backfill过程时，PG先完成Recovery过程，再完成Backfill过程，特别强调这里的先后顺序。其具体过程如下：
+  * Activating状态：在接收到`DoRecovery`事件后，转移到WaitLocalRecoveryReserved状态。
+  * WaitLocalRecoveryReserved状态：在这个状态中完成本地资源的预约。当收到`LocalRecoveryReserved`事件后，标志着本地资源预约的完成，转移到WaitRemoteRecoveryReserved状态。
+  * WaitRemoteRecoveryReserved状态：在这个状态中完成远程资源的预约。当接收到`AllRemotesReserved`事件，标志着该PG在所有参与数据修复的从OSD上完成资源预约，进入Recoverying状态。
+  * Recoverying状态：在这个状态中完成实际的数据修复工作。完成后把PG设置为`PG_STATE_RECOVERING`状态，开始启动数据修复。
+  * 在Recoverying状态完成Recovery工作后，如果需要Backfill工作，就接收RequestBackfill事件，转入Backfill流程。
+  * 如果没有Backfill工作流程，直接接收`AllReplicasRecovered`事件，转入Recovered状态。
+  * Recovered状态：到达本状态，意味着已经完成数据修复工作。当收到事件`GoClean`后，PG就进入clean状态。
+
+### Recovery Process
+
+数据修复的依据是在Peering过程中产生的如下信息：
+* 主副本上的缺失对象的信息保存在`pg_log`类的`pg_missing_t`结构中。
+* 各从副本上的缺失对象信息保存在OSD对应的`peer_missing`中的`pg_missing_t`结构中。
+* 缺失对象的位置信息保存在`MissingLoc`中。
+
+根据以上信息，就可以知道该PG里各个OSD缺失的对象信息，以及该缺失的对象目前在哪些OSD上有完整的信息。基于上面的信息，数据修复过程就相对比较清晰：
+* 对于主OSD缺失的对象，随机选择一个拥有该对象的OSD，把数据拉取过来。
+* 对于replica缺失的对象，从主副本上把缺失的对象数据推送到从副本上来完成数据的修复。
+* 对于比较特殊的快照对象，在修复时加入了一些优化的方法。
+
+`OSD::do_recovery`函数来执行实际的数据修复操作。
+
+```cpp
+void OSD::do_recovery(PG *pg,
+                      epoch_t queued,
+                      uint64_t reserved_pushes,
+                      ThreadPool::TPHandle &handle) {
+    uint64_t started = 0;
+
+    /*
+     * When the value of osd_recovery_sleep is set greater than zero, recovery
+     * ops are scheduled after osd_recovery_sleep amount of time from the previous
+     * recovery event's schedule time. This is done by adding a
+     * recovery_requeue_callback event, which re-queues the recovery op using
+     * queue_recovery_after_sleep.
+     */
+    float recovery_sleep = get_osd_recovery_sleep();
+    {
+        std::lock_guard l(service.sleep_lock);
+        if (recovery_sleep > 0 && service.recovery_needs_sleep) {
+            PGRef pgref(pg);
+            auto recovery_requeue_callback =
+                new LambdaContext([this, pgref, queued, reserved_pushes](int r) {
+                    dout(20) << "do_recovery wake up at " << ceph_clock_now()
+                             << ", re-queuing recovery" << dendl;
+                    std::lock_guard l(service.sleep_lock);
+                    service.recovery_needs_sleep = false;
+                    service.queue_recovery_after_sleep(pgref.get(), queued, reserved_pushes);
+                });
+
+            // This is true for the first recovery op and when the previous recovery op
+            // has been scheduled in the past. The next recovery op is scheduled after
+            // completing the sleep from now.
+
+            if (auto now = ceph::real_clock::now(); service.recovery_schedule_time < now) {
+                service.recovery_schedule_time = now;
+            }
+            service.recovery_schedule_time += ceph::make_timespan(recovery_sleep);
+            service.sleep_timer.add_event_at(service.recovery_schedule_time,
+                                             recovery_requeue_callback);
+            dout(20) << "Recovery event scheduled at " << service.recovery_schedule_time << dendl;
+            return;
+        }
+    }
+
+    {
+        {
+            std::lock_guard l(service.sleep_lock);
+            service.recovery_needs_sleep = true;
+        }
+
+        if (pg->pg_has_reset_since(queued)) {
+            goto out;
+        }
+
+        dout(10) << "do_recovery starting " << reserved_pushes << " " << *pg << dendl;
+#ifdef DEBUG_RECOVERY_OIDS
+        dout(20) << "  active was " << service.recovery_oids[pg->pg_id] << dendl;
+#endif
+
+        bool do_unfound = pg->start_recovery_ops(reserved_pushes, handle, &started);
+        dout(10) << "do_recovery started " << started << "/" << reserved_pushes << " on " << *pg
+                 << dendl;
+
+        if (do_unfound) {
+            PeeringCtx rctx = create_context();
+            rctx.handle = &handle;
+            pg->find_unfound(queued, rctx);
+            dispatch_context(rctx, pg, pg->get_osdmap());
+        }
+    }
+
+out:
+    ceph_assert(started <= reserved_pushes);
+    service.release_reserved_pushes(reserved_pushes);
+}
+```
+
+其中`OSD::get_osd_recovery_sleep`可以控制数据恢复的速度。
+
+```cpp
+float OSD::get_osd_recovery_sleep() {
+    if (cct->_conf->osd_recovery_sleep)
+        return cct->_conf->osd_recovery_sleep;
+    if (!store_is_rotational && !journal_is_rotational)
+        return cct->_conf->osd_recovery_sleep_ssd;
+    else if (store_is_rotational && !journal_is_rotational)
+        return cct->_conf.get_val<double>("osd_recovery_sleep_hybrid");
+    else
+        return cct->_conf->osd_recovery_sleep_hdd;
+}
+```
+
+具体处理流程如下：
+* 配置选项`osd_recovery_sleep`设置了线程做一次修复后的休眠时间。如果设置了该值，每次线程开始先休眠相应的时间长度。该参数默认值为0，不需要休眠。
+* 调用`PrimaryLogPG::start_recovery_ops`进行实际恢复。
+
+```cpp
+bool PrimaryLogPG::start_recovery_ops(uint64_t max,
+                                      ThreadPool::TPHandle &handle,
+                                      uint64_t *ops_started) {
+    uint64_t &started = *ops_started;
+    started = 0;
+    bool work_in_progress = false;
+    bool recovery_started = false;
+    ceph_assert(is_primary());
+    ceph_assert(is_peered());
+    ceph_assert(!recovery_state.is_deleting());
+
+    ceph_assert(recovery_queued);
+    recovery_queued = false;
+
+    if (!state_test(PG_STATE_RECOVERING) && !state_test(PG_STATE_BACKFILLING)) {
+        /* TODO: I think this case is broken and will make do_recovery()
+         * unhappy since we're returning false */
+        dout(10) << "recovery raced and were queued twice, ignoring!" << dendl;
+        return have_unfound();
+    }
+
+    const auto &missing = recovery_state.get_pg_log().get_missing();
+
+    uint64_t num_unfound = get_num_unfound();
+
+    if (!recovery_state.have_missing()) {
+        recovery_state.local_recovery_complete();
+    }
+
+    if (!missing.have_missing() ||   // Primary does not have missing
+                                     // or all of the missing objects are unfound.
+        recovery_state.all_missing_unfound()) {
+        // Recover the replicas.
+        started = recover_replicas(max, handle, &recovery_started);
+    }
+    if (!started) {
+        // We still have missing objects that we should grab from replicas.
+        started += recover_primary(max, handle);
+    }
+    if (!started && num_unfound != get_num_unfound()) {
+        // second chance to recovery replicas
+        started = recover_replicas(max, handle, &recovery_started);
+    }
+
+    if (started || recovery_started)
+        work_in_progress = true;
+
+    bool deferred_backfill = false;
+    if (recovering.empty() && state_test(PG_STATE_BACKFILLING) && !get_backfill_targets().empty() &&
+        started < max && missing.num_missing() == 0 && waiting_on_backfill.empty()) {
+        if (get_osdmap()->test_flag(CEPH_OSDMAP_NOBACKFILL)) {
+            dout(10) << "deferring backfill due to NOBACKFILL" << dendl;
+            deferred_backfill = true;
+        } else if (get_osdmap()->test_flag(CEPH_OSDMAP_NOREBALANCE) && !is_degraded()) {
+            dout(10) << "deferring backfill due to NOREBALANCE" << dendl;
+            deferred_backfill = true;
+        } else if (!recovery_state.is_backfill_reserved()) {
+            /* DNMNOTE I think this branch is dead */
+            dout(10) << "deferring backfill due to !backfill_reserved" << dendl;
+            if (!backfill_reserving) {
+                dout(10) << "queueing RequestBackfill" << dendl;
+                backfill_reserving = true;
+                queue_peering_event(PGPeeringEventRef(std::make_shared<PGPeeringEvent>(
+                    get_osdmap_epoch(), get_osdmap_epoch(), PeeringState::RequestBackfill())));
+            }
+            deferred_backfill = true;
+        } else {
+            started += recover_backfill(max - started, handle, &work_in_progress);
+        }
+    }
+
+    dout(10) << " started " << started << dendl;
+    osd->logger->inc(l_osd_rop, started);
+
+    if (!recovering.empty() || work_in_progress || recovery_ops_active > 0 || deferred_backfill)
+        return !work_in_progress && have_unfound();
+
+    ceph_assert(recovering.empty());
+    ceph_assert(recovery_ops_active == 0);
+
+    dout(10) << __func__
+             << " needs_recovery: " << recovery_state.get_missing_loc().get_needs_recovery()
+             << dendl;
+    dout(10) << __func__ << " missing_loc: " << recovery_state.get_missing_loc().get_missing_locs()
+             << dendl;
+    int unfound = get_num_unfound();
+    if (unfound) {
+        dout(10) << " still have " << unfound << " unfound" << dendl;
+        return true;
+    }
+
+    if (missing.num_missing() > 0) {
+        // this shouldn't happen!
+        osd->clog->error() << info.pgid << " Unexpected Error: recovery ending with "
+                           << missing.num_missing() << ": " << missing.get_items();
+        return false;
+    }
+
+    if (needs_recovery()) {
+        // this shouldn't happen!
+        // We already checked num_missing() so we must have missing replicas
+        osd->clog->error() << info.pgid
+                           << " Unexpected Error: recovery ending with missing replicas";
+        return false;
+    }
+
+    if (state_test(PG_STATE_RECOVERING)) {
+        state_clear(PG_STATE_RECOVERING);
+        state_clear(PG_STATE_FORCED_RECOVERY);
+        if (needs_backfill()) {
+            dout(10) << "recovery done, queuing backfill" << dendl;
+            queue_peering_event(PGPeeringEventRef(std::make_shared<PGPeeringEvent>(
+                get_osdmap_epoch(), get_osdmap_epoch(), PeeringState::RequestBackfill())));
+        } else {
+            dout(10) << "recovery done, no backfill" << dendl;
+            state_clear(PG_STATE_FORCED_BACKFILL);
+            queue_peering_event(PGPeeringEventRef(std::make_shared<PGPeeringEvent>(
+                get_osdmap_epoch(), get_osdmap_epoch(), PeeringState::AllReplicasRecovered())));
+        }
+    } else {   // backfilling
+        state_clear(PG_STATE_BACKFILLING);
+        state_clear(PG_STATE_FORCED_BACKFILL);
+        state_clear(PG_STATE_FORCED_RECOVERY);
+        dout(10) << "recovery done, backfill done" << dendl;
+        queue_peering_event(PGPeeringEventRef(std::make_shared<PGPeeringEvent>(
+            get_osdmap_epoch(), get_osdmap_epoch(), PeeringState::Backfilled())));
+    }
+
+    return false;
+}
+```
+
+主要流程：
+* 进行一些状态检查。
+* 根据当前primary状态进行恢复：
+  * 如果`num_missing`等于`num_unfound`，说明主OSD所缺失对象都为unfound类型的对象，先调用函数`recover_replicas`启动修复replica上的对象。
+  * 如果`started`为`0`，也就是已经启动修复的对象数量为`0`，调用函数`recover_primary`修复主OSD上的对象。
+  * 如果`started`仍然为0，且`num_unfound`有变化，再次启动`recover_replicas`修复副本。
+* 如果`started`不为零或`recovery_started`不为`false`，设置`work_in_progress`的值为true。
+* 如果recovering队列为空，也就是没有正在进行Recovery操作的对象，状态为`PG_STATE_BACKFILL`，并且`backfill_targets`不为空，`started`小于`max`，`missing.num_missing()`为`0`，的情况下：
+  * 如果`PG_STATE_RECOVERING`设置了：
+    *  如果需要backfill，就投递`RequestBackfill`事件给状态机，启动Backfill过程。
+    *  否则投递`AllReplicasRecovered`事件。
+  * 否则，投递`Backfilled`事件完成数据恢复。
+
+```cpp
+/**
+ * do one recovery op.
+ * return true if done, false if nothing left to do.
+ */
+uint64_t PrimaryLogPG::recover_primary(uint64_t max, ThreadPool::TPHandle &handle) {
+    ceph_assert(is_primary());
+
+    const auto &missing = recovery_state.get_pg_log().get_missing();
+
+    dout(10) << __func__ << " recovering " << recovering.size() << " in pg,"
+             << " missing " << missing << dendl;
+
+    dout(25) << __func__ << " " << missing.get_items() << dendl;
+
+    // look at log!
+    pg_log_entry_t *latest = 0;
+    unsigned started = 0;
+    int skipped = 0;
+
+    PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
+    map<version_t, hobject_t>::const_iterator p =
+        missing.get_rmissing().lower_bound(recovery_state.get_pg_log().get_log().last_requested);
+    while (p != missing.get_rmissing().end()) {
+        handle.reset_tp_timeout();
+        hobject_t soid;
+        version_t v = p->first;
+
+        auto it_objects = recovery_state.get_pg_log().get_log().objects.find(p->second);
+        if (it_objects != recovery_state.get_pg_log().get_log().objects.end()) {
+            latest = it_objects->second;
+            ceph_assert(latest->is_update() || latest->is_delete());
+            soid = latest->soid;
+        } else {
+            latest = 0;
+            soid = p->second;
+        }
+        const pg_missing_item &item = missing.get_items().find(p->second)->second;
+        ++p;
+
+        hobject_t head = soid.get_head();
+
+        eversion_t need = item.need;
+
+        dout(10) << __func__ << " " << soid << " " << item.need
+                 << (missing.is_missing(soid) ? " (missing)" : "")
+                 << (missing.is_missing(head) ? " (missing head)" : "")
+                 << (recovering.count(soid) ? " (recovering)" : "")
+                 << (recovering.count(head) ? " (recovering head)" : "") << dendl;
+
+        if (latest) {
+            switch (latest->op) {
+            case pg_log_entry_t::CLONE:
+                /*
+                 * Handling for this special case removed for now, until we
+                 * can correctly construct an accurate SnapSet from the old
+                 * one.
+                 */
+                break;
+
+            case pg_log_entry_t::LOST_REVERT: {
+                if (item.have == latest->reverting_to) {
+                    ObjectContextRef obc = get_object_context(soid, true);
+
+                    if (obc->obs.oi.version == latest->version) {
+                        // I'm already reverting
+                        dout(10) << " already reverting " << soid << dendl;
+                    } else {
+                        dout(10) << " reverting " << soid << " to " << latest->prior_version
+                                 << dendl;
+                        obc->obs.oi.version = latest->version;
+
+                        ObjectStore::Transaction t;
+                        bufferlist b2;
+                        obc->obs.oi.encode(
+                            b2, get_osdmap()->get_features(CEPH_ENTITY_TYPE_OSD, nullptr));
+                        ceph_assert(!pool.info.require_rollback());
+                        t.setattr(coll, ghobject_t(soid), OI_ATTR, b2);
+
+                        recovery_state.recover_got(soid, latest->version, false, t);
+
+                        ++active_pushes;
+
+                        t.register_on_applied(new C_OSD_AppliedRecoveredObject(this, obc));
+                        t.register_on_commit(new C_OSD_CommittedPushedObject(
+                            this, get_osdmap_epoch(), info.last_complete));
+                        osd->store->queue_transaction(ch, std::move(t));
+                        continue;
+                    }
+                } else {
+                    /*
+                     * Pull the old version of the object.  Update missing_loc here to have the
+                     * location of the version we want.
+                     *
+                     * This doesn't use the usual missing_loc paths, but that's okay:
+                     *  - if we have it locally, we hit the case above, and go from there.
+                     *  - if we don't, we always pass through this case during recovery and set up
+                     * the location properly.
+                     *  - this way we don't need to mangle the missing code to be general about
+                     * needing an old version...
+                     */
+                    eversion_t alternate_need = latest->reverting_to;
+                    dout(10) << " need to pull prior_version " << alternate_need << " for revert "
+                             << item << dendl;
+
+                    set<pg_shard_t> good_peers;
+                    for (auto p = recovery_state.get_peer_missing().begin();
+                         p != recovery_state.get_peer_missing().end();
+                         ++p) {
+                        if (p->second.is_missing(soid, need) &&
+                            p->second.get_items().at(soid).have == alternate_need) {
+                            good_peers.insert(p->first);
+                        }
+                    }
+                    recovery_state.set_revert_with_targets(soid, good_peers);
+                    dout(10) << " will pull " << alternate_need << " or " << need << " from one of "
+                             << recovery_state.get_missing_loc().get_locations(soid) << dendl;
+                }
+            } break;
+            }
+        }
+
+        if (!recovering.count(soid)) {
+            if (recovering.count(head)) {
+                ++skipped;
+            } else {
+                int r = recover_missing(soid, need, get_recovery_op_priority(), h);
+                switch (r) {
+                case PULL_YES:
+                    ++started;
+                    break;
+                case PULL_HEAD:
+                    ++started;
+                case PULL_NONE:
+                    ++skipped;
+                    break;
+                default:
+                    ceph_abort();
+                }
+                if (started >= max)
+                    break;
+            }
+        }
+
+        // only advance last_requested if we haven't skipped anything
+        if (!skipped)
+            recovery_state.set_last_requested(v);
+    }
+
+    pgbackend->run_recovery_op(h, get_recovery_op_priority());
+    return started;
+}
+```
+
+恢复主要流程：
+* 遍历`missing`列表：
+  * 如果是`CLONE`跳过。
+  * 如果为`LOST_REVERT`，该revert操作为数据不一致时，管理员通过命令行强行回退到指定版本，reverting_to记录了回退的版本号：
+    * 如果`item.have`等于`latest->reverting_to`版本，也就是通过日志记录显示当前已经拥有回退的版本，那么就获取对象的`ObjectContext`，如果检查对象当前的版本`obc->obs.oi.version`等于`latest->version`，说明该回退操作完成。
+    * 如果`item.have`等于`latest->reverting_to`，但是对象当前的版本`obc->obs.oi.version`不等于`latest->version`，说明没有执行回退操作，直接修改对象的版本号为`latest->version`即可。
+  * 否则，需要拉取该`reverting_to`版本的对象，这里不做特殊的处理，只是检查所有OSD是否拥有该版本的对象，如果有就加入到`missing_loc`记录该版本的位置信息，由后续修复继续来完成。
+  * 如果该对象在recovering过程中，表明正在修复，或者其head对象正在修复，跳过，并计数增加`skipped`；否则调用函数`recover_missing`来修复对象。
+
+`get_recovery_op_priority`控制恢复的优先级。
+
+```cpp
+int get_recovery_op_priority() const {
+    int64_t pri = 0;
+    pool.info.opts.get(pool_opts_t::RECOVERY_OP_PRIORITY, &pri);
+    return pri > 0 ? pri : cct->_conf->osd_recovery_op_priority;
+}
+```
+
+体现在`ReplicatedBackend::run_recovery_op`中。
+
+```cpp
+void ReplicatedBackend::run_recovery_op(PGBackend::RecoveryHandle *_h, int priority) {
+    RPGHandle *h = static_cast<RPGHandle *>(_h);
+    send_pushes(priority, h->pushes);
+    send_pulls(priority, h->pulls);
+    send_recovery_deletes(priority, h->deletes);
+    delete h;
+}
+```
+
+```cpp
+class PGRecoveryMsg {
+public:
+    op_scheduler_class get_scheduler_class() const final {
+        auto priority = op->get_req()->get_priority();
+        if (priority >= CEPH_MSG_PRIO_HIGH) {
+            return op_scheduler_class::immediate;
+        }
+        return op_scheduler_class::background_recovery;
+    }
+};
+
+#define CEPH_MSG_PRIO_LOW     64
+#define CEPH_MSG_PRIO_DEFAULT 127
+#define CEPH_MSG_PRIO_HIGH    196
+#define CEPH_MSG_PRIO_HIGHEST 255
+```
+
+下面举例说明，当最后的日志记录类型为LOST_REVERT时的修复过程。
+
+PG日志的记录如下：每个单元代表一条日志记录，分别为对象的名字和版本以及操作，版本的格式为`（epoch，version）`。灰色的部分代表本OSD上缺失的日志记录，该日志记录是从权威日志记录中拷贝过来的，所以当前该日志记录是连续完整的。
+
+**正常情况的修复：**
+
+![F17](./F17.png)
+
+缺失的对象列表为`[obj1，obj2]`。当前修复对象为`obj1`。由日志记录可知：对象`obj1`被修改过三次，分别为版本`6，7，8`。当前拥有的`obj1`对象的版本`have`值为`4`，修复时只修复到最后修改的版本`8`即可。
+
+**最后一个操作为`LOST_REVERT`类型的操作：**
+
+![F18](./F18.png)
+
+对于要修复的对象obj1，最后一次操作为`LOST_REVERT`类型的操作，该操作当前版本`version`为`8`，修改前的版本`prior_version`为`7`，回退版本`reverting_to`为`4`。在这种情况下，日志显示当前已经有版本`4`，检查对象`obj1`的实际版本，也就是`object_info`里保存的版本号：
+* 如果该值是`8`，说明最后一次revert操作成功，不需要做任何修复动作。
+* 如果该值是`4`，说明`LOST_REVERT`操作就没有执行。当然数据内容已经是版本`4`了，只需要修改`object_info`的版本为`8`即可。
+* 如果回退的版本`reverting_to`不是版本`4`，而是要回退到版本`6`，那么最终还是需要把`obj1`的数据修复到版本`6`的数据。Ceph在这里的处理，仅仅是检查其他OSD缺失的对象中是否有版本`6`，如果有，就加入到`missing_loc`中，记录拥有该版本的OSD位置，待后续继续修复。
+
+```cpp
+int ReplicatedBackend::recover_object(const hobject_t &hoid,
+                                      eversion_t v,
+                                      ObjectContextRef head,
+                                      ObjectContextRef obc,
+                                      RecoveryHandle *_h) {
+    dout(10) << __func__ << ": " << hoid << dendl;
+    RPGHandle *h = static_cast<RPGHandle *>(_h);
+    if (get_parent()->get_local_missing().is_missing(hoid)) {
+        ceph_assert(!obc);
+        // pull
+        prepare_pull(v, hoid, head, h);
+    } else {
+        ceph_assert(obc);
+        int started = start_pushes(hoid, obc, h);
+        if (started < 0) {
+            pushing[hoid].clear();
+            return started;
+        }
+    }
+    return 0;
+}
+```
+
+* 对于primary missing的对象，调用`prepare_pull`，后续从其他replica上pull。
+* 否则调用`start_pushes`，后续准备push给replica。
+
+![F19](./F19.png)
+
+对于pushs和delete流程：
+* 考虑push对象数量限制。
+* 考虑push对象代价。
+
+```cpp
+void ReplicatedBackend::send_pushes(int prio, map<pg_shard_t, vector<PushOp>> &pushes) {
+    for (map<pg_shard_t, vector<PushOp>>::iterator i = pushes.begin(); i != pushes.end(); ++i) {
+        ConnectionRef con = get_parent()->get_con_osd_cluster(i->first.osd, get_osdmap_epoch());
+        if (!con)
+            continue;
+        vector<PushOp>::iterator j = i->second.begin();
+        while (j != i->second.end()) {
+            uint64_t cost = 0;
+            uint64_t pushes = 0;
+            MOSDPGPush *msg = new MOSDPGPush();
+            msg->from = get_parent()->whoami_shard();
+            msg->pgid = get_parent()->primary_spg_t();
+            msg->map_epoch = get_osdmap_epoch();
+            msg->min_epoch = get_parent()->get_last_peering_reset_epoch();
+            msg->set_priority(prio);
+            msg->is_repair = get_parent()->pg_is_repair();
+            for (; (j != i->second.end() && cost < cct->_conf->osd_max_push_cost &&
+                    pushes < cct->_conf->osd_max_push_objects);
+                 ++j) {
+                dout(20) << __func__ << ": sending push " << *j << " to osd." << i->first << dendl;
+                cost += j->cost(cct);
+                pushes += 1;
+                msg->pushes.push_back(*j);
+            }
+            msg->set_cost(cost);
+            get_parent()->send_message_osd_cluster(msg, con);
+        }
+    }
+}
+
+void PGBackend::send_recovery_deletes(
+    int prio, const map<pg_shard_t, vector<pair<hobject_t, eversion_t>>> &deletes) {
+    epoch_t min_epoch = get_parent()->get_last_peering_reset_epoch();
+    for (const auto &p : deletes) {
+        const auto &shard = p.first;
+        const auto &objects = p.second;
+        ConnectionRef con = get_parent()->get_con_osd_cluster(shard.osd, get_osdmap_epoch());
+        if (!con)
+            continue;
+        auto it = objects.begin();
+        while (it != objects.end()) {
+            uint64_t cost = 0;
+            uint64_t deletes = 0;
+            spg_t target_pg = spg_t(get_parent()->get_info().pgid.pgid, shard.shard);
+            MOSDPGRecoveryDelete *msg = new MOSDPGRecoveryDelete(
+                get_parent()->whoami_shard(), target_pg, get_osdmap_epoch(), min_epoch);
+            msg->set_priority(prio);
+
+            while (it != objects.end() && cost < cct->_conf->osd_max_push_cost &&
+                   deletes < cct->_conf->osd_max_push_objects) {
+                dout(20) << __func__ << ": sending recovery delete << " << it->first << " "
+                         << it->second << " to osd." << shard << dendl;
+                msg->objects.push_back(*it);
+                cost += cct->_conf->osd_push_per_object_cost;
+                ++deletes;
+                ++it;
+            }
+
+            msg->set_cost(cost);
+            get_parent()->send_message_osd_cluster(msg, con);
+        }
+    }
+}
+```
+
+```cpp
+void ReplicatedBackend::send_pulls(int prio, map<pg_shard_t, vector<PullOp>> &pulls) {
+    for (map<pg_shard_t, vector<PullOp>>::iterator i = pulls.begin(); i != pulls.end(); ++i) {
+        ConnectionRef con = get_parent()->get_con_osd_cluster(i->first.osd, get_osdmap_epoch());
+        if (!con)
+            continue;
+        dout(20) << __func__ << ": sending pulls " << i->second << " to osd." << i->first << dendl;
+        MOSDPGPull *msg = new MOSDPGPull();
+        msg->from = parent->whoami_shard();
+        msg->set_priority(prio);
+        msg->pgid = get_parent()->primary_spg_t();
+        msg->map_epoch = get_osdmap_epoch();
+        msg->min_epoch = get_parent()->get_last_peering_reset_epoch();
+        msg->set_pulls(std::move(i->second));
+        msg->compute_cost(cct);
+        get_parent()->send_message_osd_cluster(msg, con);
+    }
+}
+```
+
+当主OSD把对象推送给缺失该对象的从OSD后，从OSD需要调用函数`handle_push`来实现数据写入工作，从而来完成该对象的修复。同样，当主OSD给从OSD发起拉取对象的请求来修复自己缺失的对象时，需要调用函数`handle_pulls`来处理该请求。
+
+```cpp
+void ReplicatedBackend::handle_push(pg_shard_t from,
+                                    const PushOp &pop,
+                                    PushReplyOp *response,
+                                    ObjectStore::Transaction *t,
+                                    bool is_repair) {
+    dout(10) << "handle_push " << pop.recovery_info << pop.after_progress << dendl;
+    bufferlist data;
+    data = pop.data;
+    bool first = pop.before_progress.first;
+    bool complete = pop.after_progress.data_complete && pop.after_progress.omap_complete;
+    bool clear_omap = !pop.before_progress.omap_complete;
+    interval_set<uint64_t> data_zeros;
+    uint64_t z_offset = pop.before_progress.data_recovered_to;
+    uint64_t z_length =
+        pop.after_progress.data_recovered_to - pop.before_progress.data_recovered_to;
+    if (z_length)
+        data_zeros.insert(z_offset, z_length);
+    response->soid = pop.recovery_info.soid;
+
+    submit_push_data(pop.recovery_info,
+                     first,
+                     complete,
+                     clear_omap,
+                     true,   // must be replicate
+                     data_zeros,
+                     pop.data_included,
+                     data,
+                     pop.omap_header,
+                     pop.attrset,
+                     pop.omap_entries,
+                     t);
+
+    if (complete) {
+        if (is_repair) {
+            get_parent()->inc_osd_stat_repaired();
+            dout(20) << __func__ << " repair complete" << dendl;
+        }
+        get_parent()->on_local_recover(pop.recovery_info.soid,
+                                       pop.recovery_info,
+                                       ObjectContextRef(),   // ok, is replica
+                                       false,
+                                       t);
+    }
+}
+
+void ReplicatedBackend::handle_pull(pg_shard_t peer, PullOp &op, PushOp *reply) {
+    const hobject_t &soid = op.soid;
+    struct stat st;
+    int r = store->stat(ch, ghobject_t(soid), &st);
+    if (r != 0) {
+        get_parent()->clog_error() << get_info().pgid << " " << peer << " tried to pull " << soid
+                                   << " but got " << cpp_strerror(-r);
+        prep_push_op_blank(soid, reply);
+    } else {
+        ObjectRecoveryInfo &recovery_info = op.recovery_info;
+        ObjectRecoveryProgress &progress = op.recovery_progress;
+        if (progress.first && recovery_info.size == ((uint64_t)-1)) {
+            // Adjust size and copy_subset
+            recovery_info.size = st.st_size;
+            if (st.st_size) {
+                interval_set<uint64_t> object_range;
+                object_range.insert(0, st.st_size);
+                recovery_info.copy_subset.intersection_of(object_range);
+            } else {
+                recovery_info.copy_subset.clear();
+            }
+            assert(recovery_info.clone_subset.empty());
+        }
+
+        r = build_push_op(recovery_info, progress, 0, reply);
+        if (r < 0)
+            prep_push_op_blank(soid, reply);
+    }
+}
+```
+
+```cpp
+bool ReplicatedBackend::handle_pull_response(pg_shard_t from,
+                                             const PushOp &pop,
+                                             PullOp *response,
+                                             list<pull_complete_info> *to_continue,
+                                             ObjectStore::Transaction *t) {
+    interval_set<uint64_t> data_included = pop.data_included;
+    bufferlist data;
+    data = pop.data;
+    dout(10) << "handle_pull_response " << pop.recovery_info << pop.after_progress
+             << " data.size() is " << data.length() << " data_included: " << data_included << dendl;
+    if (pop.version == eversion_t()) {
+        // replica doesn't have it!
+        _failed_pull(from, pop.soid);
+        return false;
+    }
+
+    const hobject_t &hoid = pop.soid;
+    ceph_assert((data_included.empty() && data.length() == 0) ||
+                (!data_included.empty() && data.length() > 0));
+
+    auto piter = pulling.find(hoid);
+    if (piter == pulling.end()) {
+        return false;
+    }
+
+    PullInfo &pi = piter->second;
+    if (pi.recovery_info.size == (uint64_t(-1))) {
+        pi.recovery_info.size = pop.recovery_info.size;
+        pi.recovery_info.copy_subset.intersection_of(pop.recovery_info.copy_subset);
+    }
+    // If primary doesn't have object info and didn't know version
+    if (pi.recovery_info.version == eversion_t()) {
+        pi.recovery_info.version = pop.version;
+    }
+
+    bool first = pi.recovery_progress.first;
+    if (first) {
+        // attrs only reference the origin bufferlist (decode from
+        // MOSDPGPush message) whose size is much greater than attrs in
+        // recovery. If obc cache it (get_obc maybe cache the attr), this
+        // causes the whole origin bufferlist would not be free until obc
+        // is evicted from obc cache. So rebuild the bufferlists before
+        // cache it.
+        auto attrset = pop.attrset;
+        for (auto &a : attrset) {
+            a.second.rebuild();
+        }
+        pi.obc = get_parent()->get_obc(pi.recovery_info.soid, attrset);
+        if (attrset.find(SS_ATTR) != attrset.end()) {
+            bufferlist ssbv = attrset.at(SS_ATTR);
+            SnapSet ss(ssbv);
+            assert(!pi.obc->ssc->exists || ss.seq == pi.obc->ssc->snapset.seq);
+        }
+        pi.recovery_info.oi = pi.obc->obs.oi;
+        pi.recovery_info = recalc_subsets(pi.recovery_info, pi.obc->ssc, pi.lock_manager);
+    }
+
+
+    interval_set<uint64_t> usable_intervals;
+    bufferlist usable_data;
+    trim_pushed_data(
+        pi.recovery_info.copy_subset, data_included, data, &usable_intervals, &usable_data);
+    data_included = usable_intervals;
+    data = std::move(usable_data);
+
+
+    pi.recovery_progress = pop.after_progress;
+
+    dout(10) << "new recovery_info " << pi.recovery_info << ", new progress "
+             << pi.recovery_progress << dendl;
+    interval_set<uint64_t> data_zeros;
+    uint64_t z_offset = pop.before_progress.data_recovered_to;
+    uint64_t z_length =
+        pop.after_progress.data_recovered_to - pop.before_progress.data_recovered_to;
+    if (z_length)
+        data_zeros.insert(z_offset, z_length);
+    bool complete = pi.is_complete();
+    bool clear_omap = !pop.before_progress.omap_complete;
+
+    submit_push_data(pi.recovery_info,
+                     first,
+                     complete,
+                     clear_omap,
+                     pi.cache_dont_need,
+                     data_zeros,
+                     data_included,
+                     data,
+                     pop.omap_header,
+                     pop.attrset,
+                     pop.omap_entries,
+                     t);
+
+    pi.stat.num_keys_recovered += pop.omap_entries.size();
+    pi.stat.num_bytes_recovered += data.length();
+    get_parent()->get_logger()->inc(l_osd_rbytes, pop.omap_entries.size() + data.length());
+
+    if (complete) {
+        pi.stat.num_objects_recovered++;
+        // XXX: This could overcount if regular recovery is needed right after a repair
+        if (get_parent()->pg_is_repair()) {
+            pi.stat.num_objects_repaired++;
+            get_parent()->inc_osd_stat_repaired();
+        }
+        clear_pull_from(piter);
+        to_continue->push_back({hoid, pi.stat});
+        get_parent()->on_local_recover(hoid, pi.recovery_info, pi.obc, false, t);
+        return false;
+    } else {
+        response->soid = pop.soid;
+        response->recovery_info = pi.recovery_info;
+        response->recovery_progress = pi.recovery_progress;
+        return true;
+    }
+}
+```
+
+一轮recovery操作可能无法完成数据恢复。
+
+`osd_recovery_max_single_start`限制了单次recovery操作能恢复的对象数量。
+
+```cpp
+void OSDService::_maybe_queue_recovery() {
+    ceph_assert(ceph_mutex_is_locked_by_me(recovery_lock));
+    uint64_t available_pushes;
+    while (!awaiting_throttle.empty() && _recover_now(&available_pushes)) {
+        uint64_t to_start = std::min(available_pushes, cct->_conf->osd_recovery_max_single_start);
+        _queue_for_recovery(awaiting_throttle.front(), to_start);
+        awaiting_throttle.pop_front();
+        dout(10) << __func__ << " starting " << to_start << ", recovery_ops_reserved "
+                 << recovery_ops_reserved << " -> " << (recovery_ops_reserved + to_start) << dendl;
+        recovery_ops_reserved += to_start;
+    }
+}
+```
+
+`_maybe_queue_recovery`会在许多地方被调用，以完成recovery操作。
+
 ## Backfill
+
+当PG完成了Recovery过程之后，如果backfill_targets不为空，表明有需要Backfill过程的OSD，就需要启动Backfill的任务，来完成PG的全部修复。
+
+```cpp
+/**
+ * recover_backfill
+ *
+ * Invariants:
+ *
+ * backfilled: fully pushed to replica or present in replica's missing set (both
+ * our copy and theirs).
+ *
+ * All objects on a backfill_target in
+ * [MIN,peer_backfill_info[backfill_target].begin) are valid; logically-removed
+ * objects have been actually deleted and all logically-valid objects are replicated.
+ * There may be PG objects in this interval yet to be backfilled.
+ *
+ * All objects in PG in [MIN,backfill_info.begin) have been backfilled to all
+ * backfill_targets.  There may be objects on backfill_target(s) yet to be deleted.
+ *
+ * For a backfill target, all objects < std::min(peer_backfill_info[target].begin,
+ *     backfill_info.begin) in PG are backfilled.  No deleted objects in this
+ * interval remain on the backfill target.
+ *
+ * For a backfill target, all objects <= peer_info[target].last_backfill
+ * have been backfilled to target
+ *
+ * There *MAY* be missing/outdated objects between last_backfill_started and
+ * std::min(peer_backfill_info[*].begin, backfill_info.begin) in the event that client
+ * io created objects since the last scan.  For this reason, we call
+ * update_range() again before continuing backfill.
+ */
+uint64_t PrimaryLogPG::recover_backfill(uint64_t max,
+                                        ThreadPool::TPHandle &handle,
+                                        bool *work_started) {
+    dout(10) << __func__ << " (" << max << ")"
+             << " bft=" << get_backfill_targets() << " last_backfill_started "
+             << last_backfill_started << (new_backfill ? " new_backfill" : "") << dendl;
+    ceph_assert(!get_backfill_targets().empty());
+
+    // Initialize from prior backfill state
+    if (new_backfill) {
+        // on_activate() was called prior to getting here
+        ceph_assert(last_backfill_started == recovery_state.earliest_backfill());
+        new_backfill = false;
+
+        // initialize BackfillIntervals
+        for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+             i != get_backfill_targets().end();
+             ++i) {
+            peer_backfill_info[*i].reset(recovery_state.get_peer_info(*i).last_backfill);
+        }
+        backfill_info.reset(last_backfill_started);
+
+        backfills_in_flight.clear();
+        pending_backfill_updates.clear();
+    }
+
+    for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+         i != get_backfill_targets().end();
+         ++i) {
+        dout(10) << "peer osd." << *i << " info " << recovery_state.get_peer_info(*i)
+                 << " interval " << peer_backfill_info[*i].begin << "-"
+                 << peer_backfill_info[*i].end << " " << peer_backfill_info[*i].objects.size()
+                 << " objects" << dendl;
+    }
+
+    // update our local interval to cope with recent changes
+    backfill_info.begin = last_backfill_started;
+    update_range(&backfill_info, handle);
+
+    unsigned ops = 0;
+    vector<boost::tuple<hobject_t, eversion_t, pg_shard_t>> to_remove;
+    set<hobject_t> add_to_stat;
+
+    for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+         i != get_backfill_targets().end();
+         ++i) {
+        peer_backfill_info[*i].trim_to(
+            std::max(recovery_state.get_peer_info(*i).last_backfill, last_backfill_started));
+    }
+    backfill_info.trim_to(last_backfill_started);
+
+    PGBackend::RecoveryHandle *h = pgbackend->open_recovery_op();
+    while (ops < max) {
+        if (backfill_info.begin <= earliest_peer_backfill() && !backfill_info.extends_to_end() &&
+            backfill_info.empty()) {
+            hobject_t next = backfill_info.end;
+            backfill_info.reset(next);
+            backfill_info.end = hobject_t::get_max();
+            update_range(&backfill_info, handle);
+            backfill_info.trim();
+        }
+
+        dout(20) << "   my backfill interval " << backfill_info << dendl;
+
+        bool sent_scan = false;
+        for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+             i != get_backfill_targets().end();
+             ++i) {
+            pg_shard_t bt = *i;
+            BackfillInterval &pbi = peer_backfill_info[bt];
+
+            dout(20) << " peer shard " << bt << " backfill " << pbi << dendl;
+            if (pbi.begin <= backfill_info.begin && !pbi.extends_to_end() && pbi.empty()) {
+                dout(10) << " scanning peer osd." << bt << " from " << pbi.end << dendl;
+                epoch_t e = get_osdmap_epoch();
+                MOSDPGScan *m = new MOSDPGScan(MOSDPGScan::OP_SCAN_GET_DIGEST,
+                                               pg_whoami,
+                                               e,
+                                               get_last_peering_reset(),
+                                               spg_t(info.pgid.pgid, bt.shard),
+                                               pbi.end,
+                                               hobject_t());
+                osd->send_message_osd_cluster(bt.osd, m, get_osdmap_epoch());
+                ceph_assert(waiting_on_backfill.find(bt) == waiting_on_backfill.end());
+                waiting_on_backfill.insert(bt);
+                sent_scan = true;
+            }
+        }
+
+        // Count simultaneous scans as a single op and let those complete
+        if (sent_scan) {
+            ops++;
+            start_recovery_op(hobject_t::get_max());   // XXX: was pbi.end
+            break;
+        }
+
+        if (backfill_info.empty() && all_peer_done()) {
+            dout(10) << " reached end for both local and all peers" << dendl;
+            break;
+        }
+
+        // Get object within set of peers to operate on and
+        // the set of targets for which that object applies.
+        hobject_t check = earliest_peer_backfill();
+
+        if (check < backfill_info.begin) {
+
+            set<pg_shard_t> check_targets;
+            for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+                 i != get_backfill_targets().end();
+                 ++i) {
+                pg_shard_t bt = *i;
+                BackfillInterval &pbi = peer_backfill_info[bt];
+                if (pbi.begin == check)
+                    check_targets.insert(bt);
+            }
+            ceph_assert(!check_targets.empty());
+
+            dout(20) << " BACKFILL removing " << check << " from peers " << check_targets << dendl;
+            for (set<pg_shard_t>::iterator i = check_targets.begin(); i != check_targets.end();
+                 ++i) {
+                pg_shard_t bt = *i;
+                BackfillInterval &pbi = peer_backfill_info[bt];
+                ceph_assert(pbi.begin == check);
+
+                to_remove.push_back(boost::make_tuple(check, pbi.objects.begin()->second, bt));
+                pbi.pop_front();
+            }
+
+            last_backfill_started = check;
+
+            // Don't increment ops here because deletions
+            // are cheap and not replied to unlike real recovery_ops,
+            // and we can't increment ops without requeueing ourself
+            // for recovery.
+        } else {
+            eversion_t &obj_v = backfill_info.objects.begin()->second;
+
+            vector<pg_shard_t> need_ver_targs, missing_targs, keep_ver_targs, skip_targs;
+            for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+                 i != get_backfill_targets().end();
+                 ++i) {
+                pg_shard_t bt = *i;
+                BackfillInterval &pbi = peer_backfill_info[bt];
+                // Find all check peers that have the wrong version
+                if (check == backfill_info.begin && check == pbi.begin) {
+                    if (pbi.objects.begin()->second != obj_v) {
+                        need_ver_targs.push_back(bt);
+                    } else {
+                        keep_ver_targs.push_back(bt);
+                    }
+                } else {
+                    const pg_info_t &pinfo = recovery_state.get_peer_info(bt);
+
+                    // Only include peers that we've caught up to their backfill line
+                    // otherwise, they only appear to be missing this object
+                    // because their pbi.begin > backfill_info.begin.
+                    if (backfill_info.begin > pinfo.last_backfill)
+                        missing_targs.push_back(bt);
+                    else
+                        skip_targs.push_back(bt);
+                }
+            }
+
+            if (!keep_ver_targs.empty()) {
+                // These peers have version obj_v
+                dout(20) << " BACKFILL keeping " << check << " with ver " << obj_v << " on peers "
+                         << keep_ver_targs << dendl;
+                // assert(!waiting_for_degraded_object.count(check));
+            }
+            if (!need_ver_targs.empty() || !missing_targs.empty()) {
+                ObjectContextRef obc = get_object_context(backfill_info.begin, false);
+                ceph_assert(obc);
+                if (obc->get_recovery_read()) {
+                    if (!need_ver_targs.empty()) {
+                        dout(20) << " BACKFILL replacing " << check << " with ver " << obj_v
+                                 << " to peers " << need_ver_targs << dendl;
+                    }
+                    if (!missing_targs.empty()) {
+                        dout(20) << " BACKFILL pushing " << backfill_info.begin << " with ver "
+                                 << obj_v << " to peers " << missing_targs << dendl;
+                    }
+                    vector<pg_shard_t> all_push = need_ver_targs;
+                    all_push.insert(all_push.end(), missing_targs.begin(), missing_targs.end());
+
+                    handle.reset_tp_timeout();
+                    int r = prep_backfill_object_push(backfill_info.begin, obj_v, obc, all_push, h);
+                    if (r < 0) {
+                        *work_started = true;
+                        dout(0) << __func__ << " Error " << r << " trying to backfill "
+                                << backfill_info.begin << dendl;
+                        break;
+                    }
+                    ops++;
+                } else {
+                    *work_started = true;
+                    dout(20) << "backfill blocking on " << backfill_info.begin
+                             << "; could not get rw_manager lock" << dendl;
+                    break;
+                }
+            }
+            dout(20) << "need_ver_targs=" << need_ver_targs << " keep_ver_targs=" << keep_ver_targs
+                     << dendl;
+            dout(20) << "backfill_targets=" << get_backfill_targets()
+                     << " missing_targs=" << missing_targs << " skip_targs=" << skip_targs << dendl;
+
+            last_backfill_started = backfill_info.begin;
+            add_to_stat.insert(backfill_info.begin);   // XXX: Only one for all pushes?
+            backfill_info.pop_front();
+            vector<pg_shard_t> check_targets = need_ver_targs;
+            check_targets.insert(check_targets.end(), keep_ver_targs.begin(), keep_ver_targs.end());
+            for (vector<pg_shard_t>::iterator i = check_targets.begin(); i != check_targets.end();
+                 ++i) {
+                pg_shard_t bt = *i;
+                BackfillInterval &pbi = peer_backfill_info[bt];
+                pbi.pop_front();
+            }
+        }
+    }
+
+    for (set<hobject_t>::iterator i = add_to_stat.begin(); i != add_to_stat.end(); ++i) {
+        ObjectContextRef obc = get_object_context(*i, false);
+        ceph_assert(obc);
+        pg_stat_t stat;
+        add_object_context_to_pg_stat(obc, &stat);
+        pending_backfill_updates[*i] = stat;
+    }
+    map<pg_shard_t, MOSDPGBackfillRemove *> reqs;
+    for (unsigned i = 0; i < to_remove.size(); ++i) {
+        handle.reset_tp_timeout();
+        const hobject_t &oid = to_remove[i].get<0>();
+        eversion_t v = to_remove[i].get<1>();
+        pg_shard_t peer = to_remove[i].get<2>();
+        MOSDPGBackfillRemove *m;
+        auto it = reqs.find(peer);
+        if (it != reqs.end()) {
+            m = it->second;
+        } else {
+            m = reqs[peer] =
+                new MOSDPGBackfillRemove(spg_t(info.pgid.pgid, peer.shard), get_osdmap_epoch());
+        }
+        m->ls.push_back(make_pair(oid, v));
+
+        if (oid <= last_backfill_started)
+            pending_backfill_updates[oid];   // add empty stat!
+    }
+    for (auto p : reqs) {
+        osd->send_message_osd_cluster(p.first.osd, p.second, get_osdmap_epoch());
+    }
+
+    pgbackend->run_recovery_op(h, get_recovery_op_priority());
+
+    hobject_t backfill_pos = std::min(backfill_info.begin, earliest_peer_backfill());
+    dout(5) << "backfill_pos is " << backfill_pos << dendl;
+    for (set<hobject_t>::iterator i = backfills_in_flight.begin(); i != backfills_in_flight.end();
+         ++i) {
+        dout(20) << *i << " is still in flight" << dendl;
+    }
+
+    hobject_t next_backfill_to_complete =
+        backfills_in_flight.empty() ? backfill_pos : *(backfills_in_flight.begin());
+    hobject_t new_last_backfill = recovery_state.earliest_backfill();
+    dout(10) << "starting new_last_backfill at " << new_last_backfill << dendl;
+    for (map<hobject_t, pg_stat_t>::iterator i = pending_backfill_updates.begin();
+         i != pending_backfill_updates.end() && i->first < next_backfill_to_complete;
+         pending_backfill_updates.erase(i++)) {
+        dout(20) << " pending_backfill_update " << i->first << dendl;
+        ceph_assert(i->first > new_last_backfill);
+        // carried from a previous round – if we are here, then we had to
+        // be requeued (by e.g. on_global_recover()) and those operations
+        // are done.
+        recovery_state.update_complete_backfill_object_stats(i->first, i->second);
+        new_last_backfill = i->first;
+    }
+    dout(10) << "possible new_last_backfill at " << new_last_backfill << dendl;
+
+    ceph_assert(!pending_backfill_updates.empty() || new_last_backfill == last_backfill_started);
+    if (pending_backfill_updates.empty() && backfill_pos.is_max()) {
+        ceph_assert(backfills_in_flight.empty());
+        new_last_backfill = backfill_pos;
+        last_backfill_started = backfill_pos;
+    }
+    dout(10) << "final new_last_backfill at " << new_last_backfill << dendl;
+
+    // If new_last_backfill == MAX, then we will send OP_BACKFILL_FINISH to
+    // all the backfill targets.  Otherwise, we will move last_backfill up on
+    // those targets need it and send OP_BACKFILL_PROGRESS to them.
+    for (set<pg_shard_t>::const_iterator i = get_backfill_targets().begin();
+         i != get_backfill_targets().end();
+         ++i) {
+        pg_shard_t bt = *i;
+        const pg_info_t &pinfo = recovery_state.get_peer_info(bt);
+
+        if (new_last_backfill > pinfo.last_backfill) {
+            recovery_state.update_peer_last_backfill(bt, new_last_backfill);
+            epoch_t e = get_osdmap_epoch();
+            MOSDPGBackfill *m = NULL;
+            if (pinfo.last_backfill.is_max()) {
+                m = new MOSDPGBackfill(MOSDPGBackfill::OP_BACKFILL_FINISH,
+                                       e,
+                                       get_last_peering_reset(),
+                                       spg_t(info.pgid.pgid, bt.shard));
+                // Use default priority here, must match sub_op priority
+                start_recovery_op(hobject_t::get_max());
+            } else {
+                m = new MOSDPGBackfill(MOSDPGBackfill::OP_BACKFILL_PROGRESS,
+                                       e,
+                                       get_last_peering_reset(),
+                                       spg_t(info.pgid.pgid, bt.shard));
+                // Use default priority here, must match sub_op priority
+            }
+            m->last_backfill = pinfo.last_backfill;
+            m->stats = pinfo.stats;
+            osd->send_message_osd_cluster(bt.osd, m, get_osdmap_epoch());
+            dout(10) << " peer " << bt << " num_objects now " << pinfo.stats.stats.sum.num_objects
+                     << " / " << info.stats.stats.sum.num_objects << dendl;
+        }
+    }
+
+    if (ops)
+        *work_started = true;
+    return ops;
+}
+```
