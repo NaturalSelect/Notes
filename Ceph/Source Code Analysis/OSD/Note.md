@@ -5400,7 +5400,7 @@ boost::statechart::result PeeringState::Stray::react(const MLogRec &logevt) {
 
 在函数`OSD::handle_osd_map`处理osd map的变化，该函数调用`consume_map`，对每一个PG调用`enqueue_peering_evt`，使其进入Peering状态。
 
-## Recover
+## Recovery
 
 ### Resource Reserve
 
@@ -6603,3 +6603,118 @@ uint64_t PrimaryLogPG::recover_backfill(uint64_t max,
     return ops;
 }
 ```
+
+函数`recovery_backfill`作为Backfill过程的核心函数，控制整个Backfill修复进程。其工作流程如下：
+* 初始设置：
+  * 在函数`on_activate_complete`中：
+    * 设置PG的属性值`new_backfill`为`true`。
+    * 设置`last_backfill_started`为`earliest_backfill()`的值。该函数计算需要backfill的PG中 `peer_info`信息里保存的`last_backfill`的最小值。
+  * `peer_backfill_info`的map中保存各个需要Backfill的OSD所对应`backfillInterval`对象信息。
+  * 首先初始化`begin`和`end`都为`peer_info.last_backfill`，由PG的Peering过程可知，在函数activate里，如果需要Backfill的OSD，设置该OSD的`peer_info`的`last_backfill`为`hobject_t()`，也就是MIN。
+  * `backfills_in_flight`保存了正在进行Backfill操作的对象，`pending_backfill_updates`保存了需要删除的对象。
+* 设置`backfill_info.begin`为`last_backfill_started`，调用函数`update_range`来更新需要进行Backfill操作的对象列表。
+* 根据各个`peer_info`的`last_backfill`对相应的`backfillInterval`信息进行`trim`操作。根据`last_backfill_started`来更新`backfill_info`里相关字段。
+* 如果`backfill_info.begin`小于等于`earliest_peer_backfill()`，说明需要继续扫描更多的对象，`backfill_info`重新设置，这里特别注意的是，`backfill_info`的`version`字段也重新设置为`(0，0)`，这会导致在随后调用的`update_scan`函数再调用`scan_range`函数来扫描对象。
+* 进行比较，如果`pbi.begin`小于`backfill_info.begin`，需要向各个OSD发送`MOSDPGScan::OP_SCAN_GET_DIGEST`消息来获取该OSD目前拥有的对象列表。
+* 当获取所有OSD的对象列表后，就对比当前主OSD的对象列表来进行修复。
+* check对象指针，就是当前OSD中最小的需要进行Backfill操作的对象：
+  * 检查check对象，如果小于`backfill_info.begin`，就在各个需要Backfill操作的OSD上删除该对象，加入到`to_remove`队列中。
+  * 如果check对象大于或者等于`backfill_info.begin`，检查拥有check对象的OSD，如果版本不一致，加入`need_ver_targ`中。如果版本相同，就加入`keep_ver_targs`中。
+  * 那些begin对象不是check对象的OSD，如果`pinfo.last_backfil`小于`backfill_info.begin`，那么，该对象缺失，加入`missing_targs`列表中。
+  * 如果`pinfo.last_backfil`大于`backfill_info.begin`，说明该OSD修复的进度已经超越当前的主OSD指示的修复进度，加入`skip_targs`中。
+* 对于`keep_ver_targs`列表中的OSD，不做任何操作。对于`need_ver_targs`和`missing_targs`中的OSD，该对象需要加入到`to_push`中去修复。
+* 调用函数`send_remove_op`给OSD发送删除的消息来删除`to_remove`中的对象。
+* 调用函数`prep_backfill_object_push`把操作打包成`PushOp`，调用函数`pgbackend->run_recovery_op`把请求发送出去。其流程和Recovery流程类似。
+* 最后用`new_last_backfill`更新各个OSD的`pg_info`的`last_backfill`值。如果`pinfo.last_backfill`为MAX，说明backfill操作完成，给该OSD发送`MOSDPGBackfill::OP_BACKFILL_FINISH`消息；否则发送`MOSDPGBackfill::OP_BACKFILL_PROGRESS`来更新各个OSD上的pg_info的`last_backfill`字段。
+
+如图所示，该PG分布在5个OSD上（也就是5个副本，这里为了方便列出各种处理情况），每一行上的对象列表都是相应OSD当前对应backfillInterval的扫描对象列表。osd5为主OSD，是权威的对象列表，其他OSD都对照主OSD上的对象列表来修复。
+
+![F20](./F20.png)
+
+下面举例来说明步骤7中的不同的修复方法：
+* 当前check对象指针为主OSD上保存的`peer_backfill_info`中`begin`的最小值。图中check对象应为`obj4`对象。
+* 比较check对象和主osd5上的`backfill_info.begin`对象，由于check小于`obj5`，所以`obj4`为多余的对象，所有拥有该check对象的OSD都必须删除该对象。故osd0和osd2上的`obj4`对象被删除，同时对应的begin指针前移。
+* 当前各个OSD的状态下图所示：此时check对象为`obj5`，比较check和`backfill_info.begin`的值：
+  * 对于当前begin为check对象的osd0、osd1、osd4：对于osd0和osd4，check对象和`backfill_info.begin`对象都是`obj5`，且版本号都为`（1，4）`，加入到`keep_ver_targs`列表中，不需要修复。
+  * 对于osd1，版本号不一致，加入`need_ver_targs`列表中，需要修复。
+  * 对于当前begin不是check对象的osd2和osd3：
+    * 对于osd2，其`last_backfill`小于`backfill_info.begin`，显然对象`obj5`缺失，加入`missing_targs`修复。
+    * 对于osd3，其`last_backfill`大于`backfill_info.begin`，也就是说其已经修复到`obj6`了，`obj5`应该已经修复了，加入`skip_targs`跳过。
+    * 步骤3处理完成后，设置`last_backfill_started`为当前的`backfill_info.begin`的值。`backfill_info.begin`指针前移，所有`begin`等于check对象的`begin`指针前移，重复以上步骤继续修复。
+
+![F21](./F21.png)
+
+函数`update_range`调用函数`scan_range`更新BackfillInterval修复的对象列表，同时检查上次扫描对象列表中，如果有对象发生写操作，就更新该对象修复的版本。
+
+```cpp
+void PrimaryLogPG::update_range(BackfillInterval *bi, ThreadPool::TPHandle &handle) {
+    int local_min = cct->_conf->osd_backfill_scan_min;
+    int local_max = cct->_conf->osd_backfill_scan_max;
+
+    if (bi->version < info.log_tail) {
+        dout(10) << __func__ << ": bi is old, rescanning local backfill_info" << dendl;
+        bi->version = info.last_update;
+        scan_range(local_min, local_max, bi, handle);
+    }
+
+    if (bi->version >= projected_last_update) {
+        dout(10) << __func__ << ": bi is current " << dendl;
+        ceph_assert(bi->version == projected_last_update);
+    } else if (bi->version >= info.log_tail) {
+        if (recovery_state.get_pg_log().get_log().empty() && projected_log.empty()) {
+            /* Because we don't move log_tail on split, the log might be
+             * empty even if log_tail != last_update.  However, the only
+             * way to get here with an empty log is if log_tail is actually
+             * eversion_t(), because otherwise the entry which changed
+             * last_update since the last scan would have to be present.
+             */
+            ceph_assert(bi->version == eversion_t());
+            return;
+        }
+
+        dout(10) << __func__ << ": bi is old, (" << bi->version
+                 << ") can be updated with log to projected_last_update " << projected_last_update
+                 << dendl;
+
+        auto func = [&](const pg_log_entry_t &e) {
+            dout(10) << __func__ << ": updating from version " << e.version << dendl;
+            const hobject_t &soid = e.soid;
+            if (soid >= bi->begin && soid < bi->end) {
+                if (e.is_update()) {
+                    dout(10) << __func__ << ": " << e.soid << " updated to version " << e.version
+                             << dendl;
+                    bi->objects.erase(e.soid);
+                    bi->objects.insert(make_pair(e.soid, e.version));
+                } else if (e.is_delete()) {
+                    dout(10) << __func__ << ": " << e.soid << " removed" << dendl;
+                    bi->objects.erase(e.soid);
+                }
+            }
+        };
+        dout(10) << "scanning pg log first" << dendl;
+        recovery_state.get_pg_log().get_log().scan_log_after(bi->version, func);
+        dout(10) << "scanning projected log" << dendl;
+        projected_log.scan_log_after(bi->version, func);
+        bi->version = projected_last_update;
+    } else {
+        ceph_abort_msg("scan_range should have raised bi->version past log_tail");
+    }
+}
+```
+
+具体实现步骤如下：
+* `bi->version`记录了扫描要修复的对象列表时PG最新更新的版本号，一般设置为`last_update_applied`或者`info.last_update`的值。初始化时，`bi->version`默认设置为`（0，0）`，所以小于`info.log_tail`，就更新`bi->version`的设置，调用函数`scan_range`扫描对象。
+* 检查如果`bi->version`的值等于`info.last_update`，说明从上次扫描对象开始到当前时间，PG没有写操作，直接返回。
+* 如果`bi->version`的值小于`info.last_update`，说明PG有写操作，需要检查从`bi->version`到`log_head`这段日志中的对象：如果该对象有更新操作，修复时就修复最新的版本；如果该对象已经删除，就不需要修复，在修复队列中删除。
+
+![F22](./F22.png)
+
+BackfillInterval的扫描的对象列表：`bi->begin`为对象`obj1（1，3）`，`bi->end`为对象`obj6（1，6）`，当前`info.last_update`为版本`（1，6）`，所以`bi->version`设置为`（1，6）`。由于本次扫描的对象列表不一定能修复完，只能等下次修复。
+
+![F23](./F23.png)
+
+第二次进入函数`recover_backfill`，此时`begin`对象指向了`obj2`对象。说明上次只完成了对象`obj1`的修复。继续修复时，期间有对象发生更新操作：
+* 对象`obj3`有写操作，版本更新为`（1，7）`。此时对象列表中要修复的对象obj3版本`（1，5）`，需要更新为版本`（1，7）`的值。
+* 对象`obj4`发送删除操作，不需要修复了，所以需要从对象列表中删除。
+
+Ceph的Backfill过程是扫描OSD上该PG的所有对象列表，和主OSD做对比，修复不存在的或者版本不一致的对象，同时删除多余的对象。
