@@ -298,6 +298,18 @@ ceph osd pool create ${name}
 
 其中${name}是池名称。
 
+创建纠删码池。
+
+```sh
+ceph osd pool create ${name} erasure
+```
+
+允许纠删码池覆盖写。
+
+```sh
+ceph osd pool set ${name} allow_ec_overwrites true
+```
+
 ## Set Pool Quota
 
 ```sh
@@ -405,6 +417,21 @@ ceph fs fail [FS-NAME]
 
 ```sh
 ceph fs rm [FS-NAME] --yes-i-really-mean-it
+```
+
+## Add data pool
+
+```sh
+ceph fs add_data_pool [FS-NAME] [POOL-NAME]
+```
+
+添加数据池
+
+修改目录的layout，使用该池。
+
+```sh
+mkdir [DIR]
+setfattr -n ceph.dir.layout.pool -v [POOL-NAME] [DIR]
 ```
 
 ## Host Manage
