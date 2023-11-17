@@ -1,4 +1,4 @@
-# ErasureCode
+# Erasure Code
 
 ## Introduction
 
@@ -107,7 +107,6 @@ D<sub>1</sub> ~D<sub>10</sub> 位数据块，P<sub>1</sub> 为数据块D<sub>1</
 * `stripe` - 用来计算同一个校验块的一组数据块，称为data stripe，简称stripe，其大小为`stripe_width`，参与的数据块的数目为`stripe_size`。
 
 $stripe\_width = chunk\_size * stripe\_size$
-
 
 EC（4+2）示例：
 
