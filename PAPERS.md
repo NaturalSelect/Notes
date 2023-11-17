@@ -26,6 +26,7 @@
 * Performance Isolation and Fairness for Multi-Tenant Cloud Storage
 * FIFO Queues are All You Need for Cache Eviction
 * Asynchronous Directory Operations in CephFS
+* RADOS: A Scalable, Reliable Storage Service for Petabyte-scale Storage Clusters
 
 ## Systems
 
