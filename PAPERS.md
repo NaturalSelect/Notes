@@ -1,5 +1,12 @@
 # Papers
 
+## Systems
+
+* CFS: A Distributed File System for Large Scale Container Platforms
+* CFS: Scaling Metadata Service for Distributed File System via Pruned Scope of Critical Sections
+* RADOS: A Scalable, Reliable Storage Service for Petabyte-scale Storage Clusters
+* Fisc: A Large-scale Cloud-native-oriented File System
+
 ## Windows Azure Storage
 
 * Windows Azure Storage: A Highly Available Cloud Storage Service with Strong Consistency
@@ -27,15 +34,8 @@
 * Performance Isolation and Fairness for Multi-Tenant Cloud Storage
 * FIFO Queues are All You Need for Cache Eviction
 * Asynchronous Directory Operations in CephFS
-* RADOS: A Scalable, Reliable Storage Service for Petabyte-scale Storage Clusters
-
-## Systems
-
-* CFS: A Distributed File System for Large Scale Container Platforms
-* CFS: Scaling Metadata Service for Distributed File System via Pruned Scope of Critical Sections
 
 ## Hardware
 
 * Zone Append: A New Way of Writing to Zoned Storage
 * File Systems Unfit as Distributed Storage Backends: Lessons from 10 Years of Ceph Evolution
-* Fisc: A Large-scale Cloud-native-oriented File System
