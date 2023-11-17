@@ -5,6 +5,7 @@
 * Windows Azure Storage: A Highly Available Cloud Storage Service with Strong Consistency
 * Erasure Coding in Windows Azure Storage
 * Azure Data Lake Store: A Hyperscale Distributed File Service for Big Data Analytics
+* Empowering Azure Storage with RDMA
 
 ## Facebook
 
