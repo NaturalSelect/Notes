@@ -2,7 +2,7 @@
 
 ## Systems
 
-### Windows Azure Storage
+### Microsoft
 
 * Windows Azure Storage: A Highly Available Cloud Storage Service with Strong Consistency
 * Erasure Coding in Windows Azure Storage
@@ -19,7 +19,7 @@
 
 * CFS: Scaling Metadata Service for Distributed File System via Pruned Scope of Critical Sections
 
-### OPPO & JD
+### OPPO & JD.com
 
 * CFS: A Distributed File System for Large Scale Container Platforms
 
@@ -36,6 +36,9 @@
 
 * HopsFS: Scaling Hierarchical File System Metadata Using NewSQL Databases
 * Spanner: Google’s Globally-Distributed Database
+* Large-scale Incremental Processing Using Distributed Transactions and Notifications
+* InfiniFS: An Efficient Metadata Service for Large-Scale Distributed Filesystems
+* A Five-Year Study of File-System Metadata
 
 ## Util
 
