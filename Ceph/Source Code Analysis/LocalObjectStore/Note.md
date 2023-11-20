@@ -3359,6 +3359,10 @@ struct AioContext {
 
 simple-write对应的上下文是`TransContext`，处理COW场景（big-write和非覆盖small-write），通常在`state_prepare`阶段将IO分为big-write和small-write的时候就已经调用`aio_write`提交到`libaio`队列了，后续会通过`_aio_thread`线程收割完成的AIO事件。
 
+非覆盖small-write存在两种情况：
+* 一种是append。
+* 另外一种是指的write正好打在一个blob上，这个blob没有其他数据，可以直接覆盖。
+
 ```cpp
 struct TransContext final : public AioContext {
     ...
@@ -3448,7 +3452,6 @@ struct Collection : public CollectionImpl {
 
     SharedBlobSet shared_blob_set;   ///< open SharedBlobs
 
-    // cache缓存onode
     // cache onodes on a per-collection basis to avoid lock
     // contention.
     OnodeSpace onode_space;
@@ -3457,4 +3460,414 @@ struct Collection : public CollectionImpl {
     pool_opts_t pool_opts;
     ContextQueue *commit_queue;
 };
+
+// PG的磁盘数据结构
+struct bluestore_cnode_t {
+    uint32_t bits; ///< how many bits of coll pgid are significant
+}
+```
+
+在BlueStore启动的时候，会调用`_open_collections`从RocksDB中加载Collection(PG)，同时也会指定一个Cache给PG。
+
+```cpp
+int BlueStore::_open_collections() {
+    dout(10) << __func__ << dendl;
+    collections_had_errors = false;
+    ceph_assert(coll_map.empty());
+    KeyValueDB::Iterator it = db->get_iterator(PREFIX_COLL);
+    for (it->upper_bound(string()); it->valid(); it->next()) {
+        coll_t cid;
+        if (cid.parse(it->key())) {
+            auto c = ceph::make_ref<Collection>(
+                this,
+                onode_cache_shards[cid.hash_to_shard(onode_cache_shards.size())],
+                buffer_cache_shards[cid.hash_to_shard(buffer_cache_shards.size())],
+                cid);
+            bufferlist bl = it->value();
+            auto p = bl.cbegin();
+            try {
+                decode(c->cnode, p);
+            } catch (ceph::buffer::error &e) {
+                derr << __func__
+                     << " failed to decode cnode, key:" << pretty_binary_string(it->key()) << dendl;
+                return -EIO;
+            }
+            dout(20) << __func__ << " opened " << cid << " " << c << " " << c->cnode << dendl;
+            _osr_attach(c.get());
+            coll_map[cid] = c;
+
+        } else {
+            derr << __func__ << " unrecognized collection " << it->key() << dendl;
+            collections_had_errors = true;
+        }
+    }
+    return 0;
+}
+```
+
+同样创建PG时，也需要将其放入Rocksdb。
+
+```cpp
+int BlueStore::_create_collection(TransContext *txc,
+                                  const coll_t &cid,
+                                  unsigned bits,
+                                  CollectionRef *c) {
+    dout(15) << __func__ << " " << cid << " bits " << bits << dendl;
+    int r;
+    bufferlist bl;
+
+    {
+        std::unique_lock l(coll_lock);
+        if (*c) {
+            r = -EEXIST;
+            goto out;
+        }
+        auto p = new_coll_map.find(cid);
+        ceph_assert(p != new_coll_map.end());
+        *c = p->second;
+        (*c)->cnode.bits = bits;
+        coll_map[cid] = *c;
+        new_coll_map.erase(p);
+    }
+    encode((*c)->cnode, bl);
+    txc->t->set(PREFIX_COLL, stringify(cid), bl);
+    r = 0;
+
+out:
+    dout(10) << __func__ << " " << cid << " bits " << bits << " = " << r << dendl;
+    return r;
+}
+```
+
+单个BlueStore管理的`Collection`是有限的(Ceph推荐每个OSD承载100个PG)，同时Collection结构体比较小巧，所以BlueStore将`Collection`设计为常驻内存。
+
+#### Onode
+
+每个对象对应一个`Onode`数据结构，而对象是属于PG的，所以`Onode`也属于PG，为了方便针对PG的操作(删除`Collection`时，不需要完整遍历Cache中的`Onode`队列来逐个检查与被删除Collection的关系)，引入了中间结构`OnodeSpace`使用一个map来记录`Collection`和`Onode`的映射关系。
+
+```cpp
+struct Collection : public CollectionImpl {
+    BlueStore *store;
+    // 每个PG有一个osr，在BlueStore层面保证读写事物的顺序性和并发性
+    OpSequencerRef osr;
+    // PG对应的 cache shard
+    BufferCacheShard *cache;   ///< our cache shard
+    // pg的磁盘结构
+    bluestore_cnode_t cnode;
+    ceph::shared_mutex lock =
+        ceph::make_shared_mutex("BlueStore::Collection::lock", true, false);
+
+    bool exists;
+
+    SharedBlobSet shared_blob_set;   ///< open SharedBlobs
+
+    // cache onodes on a per-collection basis to avoid lock
+    // contention.
+    OnodeSpace onode_space;
+
+    // pool options
+    pool_opts_t pool_opts;
+    ContextQueue *commit_queue;
+};
+```
+
+```cpp
+struct OnodeSpace {
+    OnodeCacheShard *cache;
+
+private:
+    /// forward lookups
+    mempool::bluestore_cache_meta::unordered_map<ghobject_t, OnodeRef> onode_map;
+};
+```
+
+### Object Data
+
+对象的数据使用`BufferSpace`来管理。
+
+```cpp
+/// map logical extent range (object) onto buffers
+struct BufferSpace {
+    enum {
+        BYPASS_CLEAN_CACHE = 0x1,   // bypass clean cache
+    };
+
+    typedef boost::intrusive::list<
+        Buffer,
+        boost::intrusive::
+            member_hook<Buffer, boost::intrusive::list_member_hook<>, &Buffer::state_item>>
+        state_list_t;
+
+    mempool::bluestore_cache_meta::map<uint32_t, std::unique_ptr<Buffer>> buffer_map;
+
+    // we use a bare intrusive list here instead of std::map because
+    // it uses less memory and we expect this to be very small (very
+    // few IOs in flight to the same Blob at the same time).
+    state_list_t writing;   ///< writing buffers, sorted by seq, ascending
+};
+```
+
+写入完成时，会调用`BlueStore::BufferSpace::_finish_write`通过flag查看是否缓存数据。
+
+```cpp
+void BlueStore::BufferSpace::_finish_write(BufferCacheShard *cache, uint64_t seq) {
+    auto i = writing.begin();
+    while (i != writing.end()) {
+        if (i->seq > seq) {
+            break;
+        }
+        if (i->seq < seq) {
+            ++i;
+            continue;
+        }
+
+        Buffer *b = &*i;
+        ceph_assert(b->is_writing());
+
+        if (b->flags & Buffer::FLAG_NOCACHE) {
+            writing.erase(i++);
+            ldout(cache->cct, 20) << __func__ << " discard " << *b << dendl;
+            buffer_map.erase(b->offset);
+        } else {
+            b->state = Buffer::STATE_CLEAN;
+            writing.erase(i++);
+            b->maybe_rebuild();
+            b->data.reassign_to_mempool(mempool::mempool_bluestore_cache_data);
+            cache->_add(b, 1, nullptr);
+            ldout(cache->cct, 20) << __func__ << " added " << *b << dendl;
+        }
+    }
+    cache->_trim();
+    cache->_audit("finish_write end");
+}
+```
+
+```cpp
+int BlueStore::_do_read(Collection *c,
+                        OnodeRef &o,
+                        uint64_t offset,
+                        size_t length,
+                        bufferlist &bl,
+                        uint32_t op_flags,
+                        uint64_t retry_count) {
+    FUNCTRACE(cct);
+    int r = 0;
+    int read_cache_policy = 0;   // do not bypass clean or dirty cache
+
+    dout(20) << __func__ << " 0x" << std::hex << offset << "~" << length << " size 0x"
+             << o->onode.size << " (" << std::dec << o->onode.size << ")" << dendl;
+    bl.clear();
+
+    if (offset >= o->onode.size) {
+        return r;
+    }
+
+    // generally, don't buffer anything, unless the client explicitly requests
+    // it.
+    bool buffered = false;
+    if (op_flags & CEPH_OSD_OP_FLAG_FADVISE_WILLNEED) {
+        dout(20) << __func__ << " will do buffered read" << dendl;
+        buffered = true;
+    } else if (cct->_conf->bluestore_default_buffered_read &&
+               (op_flags &
+                (CEPH_OSD_OP_FLAG_FADVISE_DONTNEED | CEPH_OSD_OP_FLAG_FADVISE_NOCACHE)) == 0) {
+        dout(20) << __func__ << " defaulting to buffered read" << dendl;
+        buffered = true;
+    }
+
+    if (offset + length > o->onode.size) {
+        length = o->onode.size - offset;
+    }
+
+    auto start = mono_clock::now();
+    o->extent_map.fault_range(db, offset, length);
+    log_latency(__func__,
+                l_bluestore_read_onode_meta_lat,
+                mono_clock::now() - start,
+                cct->_conf->bluestore_log_op_age);
+    _dump_onode<30>(cct, *o);
+
+    // for deep-scrub, we only read dirty cache and bypass clean cache in
+    // order to read underlying block device in case there are silent disk errors.
+    if (op_flags & CEPH_OSD_OP_FLAG_BYPASS_CLEAN_CACHE) {
+        dout(20) << __func__ << " will bypass cache and do direct read" << dendl;
+        read_cache_policy = BufferSpace::BYPASS_CLEAN_CACHE;
+    }
+
+    // build blob-wise list to of stuff read (that isn't cached)
+    ready_regions_t ready_regions;
+    blobs2read_t blobs2read;
+    _read_cache(o, offset, length, read_cache_policy, ready_regions, blobs2read);
+
+
+    // read raw blob data.
+    start = mono_clock::now();   // for the sake of simplicity
+                                 // measure the whole block below.
+                                 // The error isn't that much...
+    vector<bufferlist> compressed_blob_bls;
+    IOContext ioc(cct, NULL, true);   // allow EIO
+    r = _prepare_read_ioc(blobs2read, &compressed_blob_bls, &ioc);
+    // we always issue aio for reading, so errors other than EIO are not allowed
+    if (r < 0)
+        return r;
+
+    int64_t num_ios = blobs2read.size();
+    if (ioc.has_pending_aios()) {
+        num_ios = ioc.get_num_ios();
+        bdev->aio_submit(&ioc);
+        dout(20) << __func__ << " waiting for aio" << dendl;
+        ioc.aio_wait();
+        r = ioc.get_return_value();
+        if (r < 0) {
+            ceph_assert(r == -EIO);   // no other errors allowed
+            return -EIO;
+        }
+    }
+    log_latency_fn(__func__,
+                   l_bluestore_read_wait_aio_lat,
+                   mono_clock::now() - start,
+                   cct->_conf->bluestore_log_op_age,
+                   [&](auto lat) { return ", num_ios = " + stringify(num_ios); });
+
+    bool csum_error = false;
+    r = _generate_read_result_bl(o,
+                                 offset,
+                                 length,
+                                 ready_regions,
+                                 compressed_blob_bls,
+                                 blobs2read,
+                                 buffered,
+                                 &csum_error,
+                                 bl);
+    if (csum_error) {
+        // Handles spurious read errors caused by a kernel bug.
+        // We sometimes get all-zero pages as a result of the read under
+        // high memory pressure. Retrying the failing read succeeds in most
+        // cases.
+        // See also: http://tracker.ceph.com/issues/22464
+        if (retry_count >= cct->_conf->bluestore_retry_disk_reads) {
+            return -EIO;
+        }
+        return _do_read(c, o, offset, length, bl, op_flags, retry_count + 1);
+    }
+    r = bl.length();
+    if (retry_count) {
+        logger->inc(l_bluestore_reads_with_retries);
+        dout(5) << __func__ << " read at 0x" << std::hex << offset << "~" << length << " failed "
+                << std::dec << retry_count << " times before succeeding" << dendl;
+        stringstream s;
+        s << " reads with retries: " << logger->get(l_bluestore_reads_with_retries);
+        _set_spurious_read_errors_alert(s.str());
+    }
+    return r;
+}
+```
+
+当读取完成时，也会根据`bluestore_default_buffered_read`决定是否缓存读取结果。
+
+### Trim
+
+BlueStore的元数据和数据都是使用内存池管理的，后台有内存池线程监控内存的使用情况，超过内存使用的限制便会做`trim`，丢弃一部分缓存的元数据和数据。
+
+```cpp
+void *BlueStore::MempoolThread::entry() {
+    std::unique_lock l{lock};
+
+    uint32_t prev_config_change = store->config_changed.load();
+    uint64_t base = store->osd_memory_base;
+    double fragmentation = store->osd_memory_expected_fragmentation;
+    uint64_t target = store->osd_memory_target;
+    uint64_t min = store->osd_memory_cache_min;
+    uint64_t max = min;
+
+    // When setting the maximum amount of memory to use for cache, first
+    // assume some base amount of memory for the OSD and then fudge in
+    // some overhead for fragmentation that scales with cache usage.
+    uint64_t ltarget = (1.0 - fragmentation) * target;
+    if (ltarget > base + min) {
+        max = ltarget - base;
+    }
+
+    binned_kv_cache = store->db->get_priority_cache();
+    binned_kv_onode_cache = store->db->get_priority_cache(PREFIX_OBJ);
+    if (store->cache_autotune && binned_kv_cache != nullptr) {
+        pcm = std::make_shared<PriorityCache::Manager>(
+            store->cct, min, max, target, true, "bluestore-pricache");
+        pcm->insert("kv", binned_kv_cache, true);
+        pcm->insert("meta", meta_cache, true);
+        pcm->insert("data", data_cache, true);
+        if (binned_kv_onode_cache != nullptr) {
+            pcm->insert("kv_onode", binned_kv_onode_cache, true);
+        }
+    }
+
+    utime_t next_balance = ceph_clock_now();
+    utime_t next_resize = ceph_clock_now();
+    utime_t next_deferred_force_submit = ceph_clock_now();
+    utime_t alloc_stats_dump_clock = ceph_clock_now();
+
+    bool interval_stats_trim = false;
+    while (!stop) {
+        // Update pcm cache settings if related configuration was changed
+        uint32_t cur_config_change = store->config_changed.load();
+        if (cur_config_change != prev_config_change) {
+            _update_cache_settings();
+            prev_config_change = cur_config_change;
+        }
+
+        // Before we trim, check and see if it's time to rebalance/resize.
+        double autotune_interval = store->cache_autotune_interval;
+        double resize_interval = store->osd_memory_cache_resize_interval;
+        double max_defer_interval = store->max_defer_interval;
+
+        double alloc_stats_dump_interval = store->cct->_conf->bluestore_alloc_stats_dump_interval;
+
+        if (alloc_stats_dump_interval > 0 &&
+            alloc_stats_dump_clock + alloc_stats_dump_interval < ceph_clock_now()) {
+            store->_record_allocation_stats();
+            alloc_stats_dump_clock = ceph_clock_now();
+        }
+        if (autotune_interval > 0 && next_balance < ceph_clock_now()) {
+            _adjust_cache_settings();
+
+            // Log events at 5 instead of 20 when balance happens.
+            interval_stats_trim = true;
+
+            if (pcm != nullptr) {
+                pcm->balance();
+            }
+
+            next_balance = ceph_clock_now();
+            next_balance += autotune_interval;
+        }
+        if (resize_interval > 0 && next_resize < ceph_clock_now()) {
+            if (ceph_using_tcmalloc() && pcm != nullptr) {
+                pcm->tune_memory();
+            }
+            next_resize = ceph_clock_now();
+            next_resize += resize_interval;
+        }
+
+        if (max_defer_interval > 0 && next_deferred_force_submit < ceph_clock_now()) {
+            if (store->get_deferred_last_submitted() + max_defer_interval < ceph_clock_now()) {
+                store->deferred_try_submit();
+            }
+            next_deferred_force_submit = ceph_clock_now();
+            next_deferred_force_submit += max_defer_interval / 3;
+        }
+
+        // Now Resize the shards
+        _resize_shards(interval_stats_trim);
+        interval_stats_trim = false;
+
+        store->_update_cache_logger();
+        auto wait = ceph::make_timespan(store->cct->_conf->bluestore_cache_trim_interval);
+        cond.wait_for(l, wait);
+    }
+    // do final dump
+    store->_record_allocation_stats();
+    stop = false;
+    pcm = nullptr;
+    return NULL;
+}
 ```

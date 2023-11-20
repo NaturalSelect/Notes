@@ -10,4 +10,4 @@
 * [Client Source Code Analysis](./Source%20Code%20Analysis/Client/Note.md)
 * [OSD](./Source%20Code%20Analysis/OSD/Note.md)
 * [ErasesureCode](./Source%20Code%20Analysis/ErasureCode/Note.md)
-* LocalObjectStore
+* [LocalObjectStore](./Source%20Code%20Analysis/LocalObjectStore/Note.md)
