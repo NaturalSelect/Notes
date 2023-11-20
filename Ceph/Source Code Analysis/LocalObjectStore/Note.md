@@ -1615,18 +1615,1846 @@ int KernelDevice::queue_discard(interval_set<uint64_t> &to_release) {
 
 See also: [SSD](/SSD/README.md)
 
+## FreelistManager
+
+BlueStore直接管理裸设备，需要自行管理空间的分配和释放。`Stupid`和`Bitmap`分配器的结果是保存在内存中的，需要使用`FreelistManager`来持久化。
+
+一个block的状态可以为占用和空闲两种状态，持久化时只需要记录一种状态即可，便可以推导出另一种状态，BlueStore记录的是空闲block。主要有两个原因：
+* 回收空间的时候，方便空闲空间的合并；
+* 已分配的空间在Object中已有记录。
+
+FreelistManager最开始有`extent`和`bitmap`两种实现，现在默认为`bitmap`实现，`extent`的实现已经废弃。
+
+空闲空间持久化到磁盘也是通过RocksDB的Batch写入的。FreelistManager将block按一定数量组成段，每个段对应一个键值对，`key`为第一个block在磁盘物理地址空间的offset，`value`为段内每个block的状态，即由0/1组成的位图，1为空闲，0为使用，这样可以通过与1进行异或运算，将分配和回收空间两种操作统一起来。
+
+```cpp
+class FreelistManager {
+    virtual int create(uint64_t size, uint64_t granularity, KeyValueDB::Transaction txn) = 0;
+
+    virtual int init(KeyValueDB *kvdb,
+                     bool db_in_read_only,
+                     std::function<int(const std::string &, std::string *)> cfg_reader) = 0;
+    virtual void sync(KeyValueDB *kvdb) = 0;
+    virtual void shutdown() = 0;
+
+    virtual void dump(KeyValueDB *kvdb) = 0;
+
+    virtual void enumerate_reset() = 0;
+    virtual bool enumerate_next(KeyValueDB *kvdb, uint64_t *offset, uint64_t *length) = 0;
+
+    virtual void allocate(uint64_t offset, uint64_t length, KeyValueDB::Transaction txn) = 0;
+    virtual void release(uint64_t offset, uint64_t length, KeyValueDB::Transaction txn) = 0;
+
+    virtual uint64_t get_size() const = 0;
+    virtual uint64_t get_alloc_units() const = 0;
+    virtual uint64_t get_alloc_size() const = 0;
+
+    virtual void get_meta(uint64_t target_size, std::vector<std::pair<string, string>> *) const = 0;
+
+    virtual std::vector<zone_state_t> get_zone_states(KeyValueDB *kvdb) const {
+        return {};
+    }
+};
+```
+
+`BitmapFreelistManager`实现如下。
+
+```cpp
+class BitmapFreelistManager : public FreelistManager {
+    // rocksdb key前缀：meta_prefix为 B，bitmap_prefix为 b
+    std::string meta_prefix, bitmap_prefix;
+    // rocksdb的merge操作：按位异或(xor)
+    std::shared_ptr<KeyValueDB::MergeOperator> merge_op;
+    // enumerate操作时加锁
+    ceph::mutex lock = ceph::make_mutex("BitmapFreelistManager::lock");
+    // 设备总大小
+    uint64_t size;              ///< size of device (bytes)
+    // block大小：bdev_block_size，默认min_alloc_size
+    uint64_t bytes_per_block;   ///< bytes per block (bdev_block_size)
+    // 每个key包含多少个block， 默认128
+    uint64_t blocks_per_key;    ///< blocks (bits) per key/value pair
+    // 每个key对应空间大小
+    uint64_t bytes_per_key;     ///< bytes per key/value pair
+    // 设备总block数
+    uint64_t blocks;            ///< size of device (blocks, size rounded up)
+
+    // 遍历rocksdb key相关的成员
+    uint64_t block_mask;   ///< mask to convert byte offset to block offset
+    uint64_t key_mask;     ///< mask to convert offset to key offset
+
+    ceph::buffer::list all_set_bl;
+
+    KeyValueDB::Iterator enumerate_p;
+    uint64_t enumerate_offset;         ///< logical offset; position
+    ceph::buffer::list enumerate_bl;   ///< current key at enumerate_offset
+    int enumerate_bl_pos;              ///< bit position in enumerate_bl
+};
+```
+
+### Initial
+
+BlueStore在初始化osd的时候，会调用`mkfs`，初始化FreelistManager(create/init)，后续如果重启进程，会执行`mount`函数，只会调用`FreelistManager::init`。
+
+```cpp
+int BlueStore::mkfs() {
+    dout(1) << __func__ << " path " << path << dendl;
+    int r;
+    uuid_d old_fsid;
+    uint64_t reserved;
+    if (cct->_conf->osd_max_object_size > OBJECT_MAX_SIZE) {
+        derr << __func__ << " osd_max_object_size " << cct->_conf->osd_max_object_size
+             << " > bluestore max " << OBJECT_MAX_SIZE << dendl;
+        return -EINVAL;
+    }
+
+    {
+        string done;
+        r = read_meta("mkfs_done", &done);
+        if (r == 0) {
+            dout(1) << __func__ << " already created" << dendl;
+            if (cct->_conf->bluestore_fsck_on_mkfs) {
+                r = fsck(cct->_conf->bluestore_fsck_on_mkfs_deep);
+                if (r < 0) {
+                    derr << __func__ << " fsck found fatal error: " << cpp_strerror(r) << dendl;
+                    return r;
+                }
+                if (r > 0) {
+                    derr << __func__ << " fsck found " << r << " errors" << dendl;
+                    r = -EIO;
+                }
+            }
+            return r;   // idempotent
+        }
+    }
+
+    {
+        string type;
+        r = read_meta("type", &type);
+        if (r == 0) {
+            if (type != "bluestore") {
+                derr << __func__ << " expected bluestore, but type is " << type << dendl;
+                return -EIO;
+            }
+        } else {
+            r = write_meta("type", "bluestore");
+            if (r < 0)
+                return r;
+        }
+    }
+
+    freelist_type = "bitmap";
+
+    r = _open_path();
+    if (r < 0)
+        return r;
+
+    r = _open_fsid(true);
+    if (r < 0)
+        goto out_path_fd;
+
+    r = _lock_fsid();
+    if (r < 0)
+        goto out_close_fsid;
+
+    r = _read_fsid(&old_fsid);
+    if (r < 0 || old_fsid.is_zero()) {
+        if (fsid.is_zero()) {
+            fsid.generate_random();
+            dout(1) << __func__ << " generated fsid " << fsid << dendl;
+        } else {
+            dout(1) << __func__ << " using provided fsid " << fsid << dendl;
+        }
+        // we'll write it later.
+    } else {
+        if (!fsid.is_zero() && fsid != old_fsid) {
+            derr << __func__ << " on-disk fsid " << old_fsid << " != provided " << fsid << dendl;
+            r = -EINVAL;
+            goto out_close_fsid;
+        }
+        fsid = old_fsid;
+    }
+
+    r = _setup_block_symlink_or_file("block",
+                                     cct->_conf->bluestore_block_path,
+                                     cct->_conf->bluestore_block_size,
+                                     cct->_conf->bluestore_block_create);
+    if (r < 0)
+        goto out_close_fsid;
+    if (cct->_conf->bluestore_bluefs) {
+        r = _setup_block_symlink_or_file("block.wal",
+                                         cct->_conf->bluestore_block_wal_path,
+                                         cct->_conf->bluestore_block_wal_size,
+                                         cct->_conf->bluestore_block_wal_create);
+        if (r < 0)
+            goto out_close_fsid;
+        r = _setup_block_symlink_or_file("block.db",
+                                         cct->_conf->bluestore_block_db_path,
+                                         cct->_conf->bluestore_block_db_size,
+                                         cct->_conf->bluestore_block_db_create);
+        if (r < 0)
+            goto out_close_fsid;
+    }
+
+    r = _open_bdev(true);
+    if (r < 0)
+        goto out_close_fsid;
+
+    // choose min_alloc_size
+    if (cct->_conf->bluestore_min_alloc_size) {
+        min_alloc_size = cct->_conf->bluestore_min_alloc_size;
+    } else {
+        ceph_assert(bdev);
+        if (_use_rotational_settings()) {
+            min_alloc_size = cct->_conf->bluestore_min_alloc_size_hdd;
+        } else {
+            min_alloc_size = cct->_conf->bluestore_min_alloc_size_ssd;
+        }
+    }
+    _validate_bdev();
+
+    // make sure min_alloc_size is power of 2 aligned.
+    if (!isp2(min_alloc_size)) {
+        derr << __func__ << " min_alloc_size 0x" << std::hex << min_alloc_size << std::dec
+             << " is not power of 2 aligned!" << dendl;
+        r = -EINVAL;
+        goto out_close_bdev;
+    }
+
+    r = _create_alloc();
+    if (r < 0) {
+        goto out_close_bdev;
+    }
+
+    reserved = _get_ondisk_reserved();
+    shared_alloc.a->init_add_free(reserved, p2align(bdev->get_size(), min_alloc_size) - reserved);
+
+    r = _open_db(true);
+    if (r < 0)
+        goto out_close_alloc;
+
+    {
+        KeyValueDB::Transaction t = db->get_transaction();
+        r = _open_fm(t, true);
+        if (r < 0)
+            goto out_close_db;
+        {
+            bufferlist bl;
+            encode((uint64_t)0, bl);
+            t->set(PREFIX_SUPER, "nid_max", bl);
+            t->set(PREFIX_SUPER, "blobid_max", bl);
+        }
+
+        {
+            bufferlist bl;
+            encode((uint64_t)min_alloc_size, bl);
+            t->set(PREFIX_SUPER, "min_alloc_size", bl);
+        }
+        {
+            bufferlist bl;
+            if (cct->_conf.get_val<bool>("bluestore_debug_legacy_omap")) {
+                bl.append(stringify(OMAP_BULK));
+            } else {
+                bl.append(stringify(OMAP_PER_PG));
+            }
+            t->set(PREFIX_SUPER, "per_pool_omap", bl);
+        }
+        ondisk_format = latest_ondisk_format;
+        _prepare_ondisk_format_super(t);
+        db->submit_transaction_sync(t);
+    }
+
+    r = write_meta("kv_backend", cct->_conf->bluestore_kvbackend);
+    if (r < 0)
+        goto out_close_fm;
+
+    r = write_meta("bluefs", stringify(bluefs ? 1 : 0));
+    if (r < 0)
+        goto out_close_fm;
+
+    if (fsid != old_fsid) {
+        r = _write_fsid();
+        if (r < 0) {
+            derr << __func__ << " error writing fsid: " << cpp_strerror(r) << dendl;
+            goto out_close_fm;
+        }
+    }
+
+out_close_fm:
+    _close_fm();
+out_close_db:
+    _close_db(false);
+out_close_alloc:
+    _close_alloc();
+out_close_bdev:
+    _close_bdev();
+out_close_fsid:
+    _close_fsid();
+out_path_fd:
+    _close_path();
+
+    if (r == 0 && cct->_conf->bluestore_fsck_on_mkfs) {
+        int rc = fsck(cct->_conf->bluestore_fsck_on_mkfs_deep);
+        if (rc < 0)
+            return rc;
+        if (rc > 0) {
+            derr << __func__ << " fsck found " << rc << " errors" << dendl;
+            r = -EIO;
+        }
+    }
+
+    if (r == 0) {
+        // indicate success by writing the 'mkfs_done' file
+        r = write_meta("mkfs_done", "yes");
+    }
+
+    if (r < 0) {
+        derr << __func__ << " failed, " << cpp_strerror(r) << dendl;
+    } else {
+        dout(0) << __func__ << " success" << dendl;
+    }
+    return r;
+}
+```
+
+主要流程：
+* 检测`osd_max_object_size`配置。
+* 查看是否已经被初始化过，如果被初始化过调用`fsck`（返回值为错误数量）。
+* 检查`type`是否是`Bluestore`。
+* 打开三个设备：
+  * `block` - 主设备。
+  * `block.wal` - 日志设备。
+  * `block.db` - Rocksdb设备。
+* 打开块设备。
+* 创建`Allocator`。
+* 打开Rocksdb。
+* 打开FreeListManager。
+* 持久化一些配置项。
+* 写入`mkfs_done`。
+
+```cpp
+int BlueStore::_open_fm(KeyValueDB::Transaction t, bool read_only) {
+    int r;
+
+    ceph_assert(fm == NULL);
+    fm = FreelistManager::create(cct, freelist_type, PREFIX_ALLOC);
+    ceph_assert(fm);
+    if (t) {
+        // create mode. initialize freespace
+        dout(20) << __func__ << " initializing freespace" << dendl;
+        {
+            bufferlist bl;
+            bl.append(freelist_type);
+            t->set(PREFIX_SUPER, "freelist_type", bl);
+        }
+        // being able to allocate in units less than bdev block size
+        // seems to be a bad idea.
+        ceph_assert(cct->_conf->bdev_block_size <= (int64_t)min_alloc_size);
+
+        uint64_t alloc_size = min_alloc_size;
+        if (bdev->is_smr()) {
+            alloc_size = _zoned_piggyback_device_parameters_onto(alloc_size);
+        }
+
+        fm->create(bdev->get_size(), alloc_size, t);
+
+        // allocate superblock reserved space.  note that we do not mark
+        // bluefs space as allocated in the freelist; we instead rely on
+        // bluefs doing that itself.
+        auto reserved = _get_ondisk_reserved();
+        fm->allocate(0, reserved, t);
+
+        if (cct->_conf->bluestore_debug_prefill > 0) {
+            uint64_t end = bdev->get_size() - reserved;
+            dout(1) << __func__ << " pre-fragmenting freespace, using "
+                    << cct->_conf->bluestore_debug_prefill << " with max free extent "
+                    << cct->_conf->bluestore_debug_prefragment_max << dendl;
+            uint64_t start = p2roundup(reserved, min_alloc_size);
+            uint64_t max_b = cct->_conf->bluestore_debug_prefragment_max / min_alloc_size;
+            float r = cct->_conf->bluestore_debug_prefill;
+            r /= 1.0 - r;
+            bool stop = false;
+
+            while (!stop && start < end) {
+                uint64_t l = (rand() % max_b + 1) * min_alloc_size;
+                if (start + l > end) {
+                    l = end - start;
+                    l = p2align(l, min_alloc_size);
+                }
+                ceph_assert(start + l <= end);
+
+                uint64_t u = 1 + (uint64_t)(r * (double)l);
+                u = p2roundup(u, min_alloc_size);
+                if (start + l + u > end) {
+                    u = end - (start + l);
+                    // trim to align so we don't overflow again
+                    u = p2align(u, min_alloc_size);
+                    stop = true;
+                }
+                ceph_assert(start + l + u <= end);
+
+                dout(20) << __func__ << " free 0x" << std::hex << start << "~" << l << " use 0x"
+                         << u << std::dec << dendl;
+
+                if (u == 0) {
+                    // break if u has been trimmed to nothing
+                    break;
+                }
+
+                fm->allocate(start + l, u, t);
+                start += l + u;
+            }
+        }
+        r = _write_out_fm_meta(0);
+        ceph_assert(r == 0);
+    } else {
+        r = fm->init(db, read_only, [&](const std::string &key, std::string *result) {
+            return read_meta(key, result);
+        });
+        if (r < 0) {
+            derr << __func__ << " freelist init failed: " << cpp_strerror(r) << dendl;
+            delete fm;
+            fm = NULL;
+            return r;
+        }
+    }
+    // if space size tracked by free list manager is that higher than actual
+    // dev size one can hit out-of-space allocation which will result
+    // in data loss and/or assertions
+    // Probably user altered the device size somehow.
+    // The only fix for now is to redeploy OSD.
+    if (fm->get_size() >= bdev->get_size() + min_alloc_size) {
+        ostringstream ss;
+        ss << "slow device size mismatch detected, "
+           << " fm size(" << fm->get_size() << ") > slow device size(" << bdev->get_size()
+           << "), Please stop using this OSD as it might cause data loss.";
+        _set_disk_size_mismatch_alert(ss.str());
+    }
+    return 0;
+}
+```
+
+```cpp
+int BitmapFreelistManager::create(uint64_t new_size,
+                                  uint64_t granularity,
+                                  KeyValueDB::Transaction txn) {
+    bytes_per_block = granularity;
+    ceph_assert(isp2(bytes_per_block));
+    size = p2align(new_size, bytes_per_block);
+    blocks_per_key = cct->_conf->bluestore_freelist_blocks_per_key;
+
+    _init_misc();
+
+    blocks = size_2_block_count(size);
+    if (blocks * bytes_per_block > size) {
+        dout(10) << __func__ << " rounding blocks up from 0x" << std::hex << size << " to 0x"
+                 << (blocks * bytes_per_block) << " (0x" << blocks << " blocks)" << std::dec
+                 << dendl;
+        // set past-eof blocks as allocated
+        _xor(size, blocks * bytes_per_block - size, txn);
+    }
+    dout(1) << __func__ << " size 0x" << std::hex << size << " bytes_per_block 0x"
+            << bytes_per_block << " blocks 0x" << blocks << " blocks_per_key 0x" << blocks_per_key
+            << std::dec << dendl;
+    {
+        bufferlist bl;
+        encode(bytes_per_block, bl);
+        txn->set(meta_prefix, "bytes_per_block", bl);
+    }
+    {
+        bufferlist bl;
+        encode(blocks_per_key, bl);
+        txn->set(meta_prefix, "blocks_per_key", bl);
+    }
+    {
+        bufferlist bl;
+        encode(blocks, bl);
+        txn->set(meta_prefix, "blocks", bl);
+    }
+    {
+        bufferlist bl;
+        encode(size, bl);
+        txn->set(meta_prefix, "size", bl);
+    }
+    return 0;
+}
+```
+
+```cpp
+void BitmapFreelistManager::_init_misc() {
+    bufferptr z(blocks_per_key >> 3);
+    memset(z.c_str(), 0xff, z.length());
+    all_set_bl.clear();
+    all_set_bl.append(z);
+
+    block_mask = ~(bytes_per_block - 1);
+
+    bytes_per_key = bytes_per_block * blocks_per_key;
+    key_mask = ~(bytes_per_key - 1);
+    dout(10) << __func__ << std::hex << " bytes_per_key 0x" << bytes_per_key << ", key_mask 0x"
+             << key_mask << std::dec << dendl;
+}
+```
+
+### Merge
+
+Merge提供合并操作减少操作rocksdb的次数，bitmap主要使用`XorMergeOperator`。
+
+```cpp
+struct XorMergeOperator : public KeyValueDB::MergeOperator {
+    void merge_nonexistent(const char *rdata, size_t rlen, std::string *new_value) override {
+        *new_value = std::string(rdata, rlen);
+    }
+    void merge(const char *ldata,
+               size_t llen,
+               const char *rdata,
+               size_t rlen,
+               std::string *new_value) override {
+        ceph_assert(llen == rlen);
+        *new_value = std::string(ldata, llen);
+        for (size_t i = 0; i < rlen; ++i) {
+            (*new_value)[i] ^= rdata[i];
+        }
+    }
+    // We use each operator name and each prefix to construct the
+    // overall RocksDB operator name for consistency check at open time.
+    const char *name() const override {
+        return "bitwise_xor";
+    }
+};
+```
+
+```cpp
+bool Merge(const rocksdb::Slice &key,
+           const rocksdb::Slice *existing_value,
+           const rocksdb::Slice &value,
+           std::string *new_value,
+           rocksdb::Logger *logger) const override {
+    // for default column family
+    // extract prefix from key and compare against each registered merge op;
+    // even though merge operator for explicit CF is included in merge_ops,
+    // it won't be picked up, since it won't match.
+    for (auto &p : store.merge_ops) {
+        if (p.first.compare(0, p.first.length(), key.data(), p.first.length()) == 0 &&
+            key.data()[p.first.length()] == 0) {
+            if (existing_value) {
+                p.second->merge(existing_value->data(),
+                                existing_value->size(),
+                                value.data(),
+                                value.size(),
+                                new_value);
+            } else {
+                p.second->merge_nonexistent(value.data(), value.size(), new_value);
+            }
+            break;
+        }
+    }
+    return true;   // OK :)
+}
+```
+
+### Allocate
+
+分配和释放空间两种操作是完全一样的，都是进行异或操作（调用`_xor`）。
+
+```cpp
+void BitmapFreelistManager::allocate(uint64_t offset,
+                                     uint64_t length,
+                                     KeyValueDB::Transaction txn) {
+    dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length << std::dec << dendl;
+    _xor(offset, length, txn);
+}
+
+void BitmapFreelistManager::release(uint64_t offset, uint64_t length, KeyValueDB::Transaction txn) {
+    dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length << std::dec << dendl;
+    _xor(offset, length, txn);
+}
+```
+
+```cpp
+void BitmapFreelistManager::_xor(uint64_t offset, uint64_t length, KeyValueDB::Transaction txn) {
+    // must be block aligned
+    ceph_assert((offset & block_mask) == offset);
+    ceph_assert((length & block_mask) == length);
+
+    uint64_t first_key = offset & key_mask;
+    uint64_t last_key = (offset + length - 1) & key_mask;
+    dout(20) << __func__ << " first_key 0x" << std::hex << first_key << " last_key 0x" << last_key
+             << std::dec << dendl;
+
+    if (first_key == last_key) {
+        bufferptr p(blocks_per_key >> 3);
+        p.zero();
+        unsigned s = (offset & ~key_mask) / bytes_per_block;
+        unsigned e = ((offset + length - 1) & ~key_mask) / bytes_per_block;
+        for (unsigned i = s; i <= e; ++i) {
+            p[i >> 3] ^= 1ull << (i & 7);
+        }
+        string k;
+        make_offset_key(first_key, &k);
+        bufferlist bl;
+        bl.append(p);
+        dout(30) << __func__ << " 0x" << std::hex << first_key << std::dec << ": ";
+        bl.hexdump(*_dout, false);
+        *_dout << dendl;
+        txn->merge(bitmap_prefix, k, bl);
+    } else {
+        // first key
+        {
+            bufferptr p(blocks_per_key >> 3);
+            p.zero();
+            unsigned s = (offset & ~key_mask) / bytes_per_block;
+            unsigned e = blocks_per_key;
+            for (unsigned i = s; i < e; ++i) {
+                p[i >> 3] ^= 1ull << (i & 7);
+            }
+            string k;
+            make_offset_key(first_key, &k);
+            bufferlist bl;
+            bl.append(p);
+            dout(30) << __func__ << " 0x" << std::hex << first_key << std::dec << ": ";
+            bl.hexdump(*_dout, false);
+            *_dout << dendl;
+            txn->merge(bitmap_prefix, k, bl);
+            first_key += bytes_per_key;
+        }
+        // middle keys
+        while (first_key < last_key) {
+            string k;
+            make_offset_key(first_key, &k);
+            dout(30) << __func__ << " 0x" << std::hex << first_key << std::dec << ": ";
+            all_set_bl.hexdump(*_dout, false);
+            *_dout << dendl;
+            txn->merge(bitmap_prefix, k, all_set_bl);
+            first_key += bytes_per_key;
+        }
+        ceph_assert(first_key == last_key);
+        {
+            bufferptr p(blocks_per_key >> 3);
+            p.zero();
+            unsigned e = ((offset + length - 1) & ~key_mask) / bytes_per_block;
+            for (unsigned i = 0; i <= e; ++i) {
+                p[i >> 3] ^= 1ull << (i & 7);
+            }
+            string k;
+            make_offset_key(first_key, &k);
+            bufferlist bl;
+            bl.append(p);
+            dout(30) << __func__ << " 0x" << std::hex << first_key << std::dec << ": ";
+            bl.hexdump(*_dout, false);
+            *_dout << dendl;
+            txn->merge(bitmap_prefix, k, bl);
+        }
+    }
+}
+```
+
+分配和释放操作一样，都是将段的bit位和当前的值进行异或。一个段对应一组blocks，默认128个，在k/v中对应一组值。例如，当磁盘空间全部空闲的时候，k/v状态如下: (b00000000，0x00), (b00001000, 0x00), (b00002000, 0x00)……b为key的前缀，代表bitmap。
+
+## Objects
+
+一个文件的逻辑空间上是连续的，但是真正在磁盘上的物理空间分布并不一定是连续的（即non-clustered）。
+
+同时`lseek`、`pwrite`之类的系统调用，也可能使得文件偏移量大于文件的长度，在文件中形成一个空洞，这些空洞中的字节都是`0`。空洞是否占用磁盘空间是有文件系统决定的，不过大部分的文件系统ext4、xfs都不占磁盘空间。这部分数据是0同时这部分数据不占磁盘空间，这种文件称为稀疏文件，这种写入方式为稀疏写。
+
+BlueStore中的对象也支持稀疏写，同时支持克隆等功能，所以对象的数据组织结构设计的会相对复杂一点。
+
+### Concepts
+
+* `Collection` - PG在内存的数据结构。
+* `bluestore_cnode_t` - PG在磁盘的数据结构。
+* `Onode` - 对象在内存的数据结构。
+* `bluestore_onode_t` - 对象在磁盘的数据结构。
+* `Extent` - 一段对象逻辑空间(`lextent`)。
+* `extent_map_t` - 一个对象包含多段逻辑空间。
+* `bluestore_pextent_t` - 一段连续磁盘物理空间。
+* `bluestore_blob_t` - 一片不一定连续的磁盘物理空间，包含多段`pextent`。
+* `Blob` - 包含一个`bluestore_blob_t`、引用计数、共享blob等信息。
+
+### Onode
+
+![F6](./F6.png)
+
+BlueStore的每个对象对应一个Onode结构体，每个Onode包含一张extent-map，extent-map包含多个extent(lextent)，每个extent负责管理对象内的一个逻辑段数据并且关联一个Blob，Blob包含多个pextent，最终将对象的数据映射到磁盘上。
+
+```cpp
+/// an in-memory object
+struct Onode {
+    MEMPOOL_CLASS_HELPERS();
+
+    // RC
+    std::atomic_int nref = 0;       ///< reference count
+    std::atomic_int pin_nref = 0;   ///< reference count replica to track pinning
+    // PG
+    Collection *c;
+    // id
+    ghobject_t oid;
+
+    /// key under PREFIX_OBJ where we are stored
+    mempool::bluestore_cache_meta::string key;
+
+    boost::intrusive::list_member_hook<> lru_item;
+
+    // Onode in rocksdb
+    bluestore_onode_t onode;   ///< metadata stored as value in kv store
+    // 墓碑标记
+    bool exists;               ///< true if object logically exists
+    // 是否在cache中
+    bool cached;               ///< Onode is logically in the cache
+                               /// (it can be pinned and hence physically out
+                               /// of it at the moment though)
+
+    // extent map
+    ExtentMap extent_map;
+
+    // track txc's that have not been committed to kv store (and whose
+    // effects cannot be read via the kvdb read methods)
+    std::atomic<int> flushing_count = {0};
+    std::atomic<int> waiting_count = {0};
+    /// protect flush_txns
+    ceph::mutex flush_lock = ceph::make_mutex("BlueStore::Onode::flush_lock");
+    ceph::condition_variable flush_cond;   ///< wait here for uncommitted txns
+};
+```
+
+`extent_map`是有序的Extent逻辑空间集合，持久化在RocksDB。lexetnt--->blob
+
+由于支持稀疏写，所以extent map中的extent可以是不连续的，即存在空洞。
+也即前一个extent的结束地址小于后一个extent的起始地址。
+
+如果单个对象内的extent过多(小块随机写多、磁盘碎片化严重)
+那么ExtentMap会很大，严重影响RocksDB的访问效率
+所以需要对ExtentMap分片即`shard_info`，同时也会合并相邻的小段。
+好处可以按需加载，减少内存占用量等。
+
+```cpp
+/// onode: per-object metadata
+struct bluestore_onode_t {
+    // 逻辑id，单个Blobstore唯一
+    uint64_t nid = 0;    ///< numeric id (locally unique)
+    // 对象大小
+    uint64_t size = 0;   ///< object size
+    // 对象扩展属性
+    // mempool to be assigned to buffer::ptr manually
+    std::map<mempool::bluestore_cache_meta::string, ceph::buffer::ptr> attrs;
+
+    struct shard_info {
+        uint32_t offset = 0;   ///< logical offset for start of shard
+        uint32_t bytes = 0;    ///< encoded bytes
+        DENC(shard_info, v, p) {
+            denc_varint(v.offset, p);
+            denc_varint(v.bytes, p);
+        }
+        void dump(ceph::Formatter *f) const;
+    };
+    std::vector<shard_info> extent_map_shards;   ///< extent std::map shards (if any)
+
+    uint32_t expected_object_size = 0;
+    uint32_t expected_write_size = 0;
+    uint32_t alloc_hint_flags = 0;
+
+    // omap 相关
+    uint8_t flags = 0;
+
+    enum {
+        FLAG_OMAP = 1,           ///< object may have omap data
+        FLAG_PGMETA_OMAP = 2,    ///< omap data is in meta omap prefix
+        FLAG_PERPOOL_OMAP = 4,   ///< omap data is in per-pool prefix; per-pool keys
+        FLAG_PERPG_OMAP = 8,     ///< omap data is in per-pg prefix; per-pg keys
+    };
+```
+
+### PExtent
+
+每段`pextent`（physical extent）对应一段连续的磁盘物理空间。
+
+```cpp
+/// pextent: physical extent
+// {offset,length}
+struct bluestore_pextent_t : public bluestore_interval_t<uint64_t, uint32_t> {
+};
+```
+
+`offset`和`length`都是块对齐的。
+
+### LExtent
+
+Extent是对象内的基本数据管理单元，数据压缩、数据校验、数据共享等功能都是基于Extent粒度实现的。这里的Extent是对象内的，并不是磁盘内的，所以称为`lextent`（logical extent），和磁盘内的`pextent`以示区分。
+
+```cpp
+struct Extent : public ExtentBase {
+        MEMPOOL_CLASS_HELPERS();
+
+        // 对象逻辑偏移量，不需要块对齐
+        uint32_t logical_offset = 0;   ///< logical offset
+        // blob 偏移量
+        uint32_t blob_offset = 0;      ///< blob offset
+        // 长度，不需要块对齐
+        uint32_t length = 0;           ///< length
+        // blob对象
+        BlobRef blob;                  ///< the blob with our data
+};
+```
+`blob_offset`有两种不同的情况：
+* 当`logical_offset`是块对齐时，`blob_offset`始终为0。
+* 当`logical_offset`不是块对齐时，将逻辑段内的数据通过Blob映射到磁盘物理段会产生物理段内的偏移称为`blob_offset`。
+
+![F7](./F7.png)
+
+### Blob
+
+```cpp
+struct Blob {
+    MEMPOOL_CLASS_HELPERS();
+
+    std::atomic_int nref = {0};     ///< reference count
+    int16_t id = -1;                ///< id, for spanning blobs only, >= 0
+    int16_t last_encoded_id = -1;   ///< (ephemeral) used during encoding only
+    SharedBlobRef shared_blob;      ///< shared blob state (if any)
+};
+```
+
+```cpp
+struct bluestore_blob_t {
+private:
+    PExtentVector extents;            ///< raw data position on device
+    uint32_t logical_length = 0;      ///< original length of data stored in the blob
+    uint32_t compressed_length = 0;   ///< compressed length if any
+};
+```
+
+### Big-Write
+
+磁盘的最小分配单元是`min_alloc_size`。
+
+对齐到`min_alloc_size`的写称为大写(big-write)，在处理是会根据实际大小生成lextent、blob，lextent包含的区域是`min_alloc_size`的整数倍，如果lextent是之前写过的，那么会将之前lextent对应的空间记录下来并回收。
+
+```cpp
+void BlueStore::_do_write_big(TransContext *txc,
+                              CollectionRef &c,
+                              OnodeRef &o,
+                              uint64_t offset,
+                              uint64_t length,
+                              bufferlist::iterator &blp,
+                              WriteContext *wctx) {
+    dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length << " target_blob_size 0x"
+             << wctx->target_blob_size << std::dec << " compress " << (int)wctx->compress << dendl;
+    logger->inc(l_bluestore_write_big);
+    logger->inc(l_bluestore_write_big_bytes, length);
+    auto max_bsize = std::max(wctx->target_blob_size, min_alloc_size);
+    uint64_t prefer_deferred_size_snapshot = prefer_deferred_size.load();
+    while (length > 0) {
+        bool new_blob = false;
+        BlobRef b;
+        uint32_t b_off = 0;
+        uint32_t l = 0;
+
+        // attempting to reuse existing blob
+        if (!wctx->compress) {
+            // enforce target blob alignment with max_bsize
+            l = max_bsize - p2phase(offset, max_bsize);
+            l = std::min(uint64_t(l), length);
+
+            auto end = o->extent_map.extent_map.end();
+
+            dout(20) << __func__ << " may be defer: 0x" << std::hex << offset << "~" << l
+                     << std::dec << dendl;
+
+            if (prefer_deferred_size_snapshot && l <= prefer_deferred_size_snapshot * 2) {
+                // Single write that spans two adjusted existing blobs can result
+                // in up to two deferred blocks of 'prefer_deferred_size'
+                // So we're trying to minimize the amount of resulting blobs
+                // and preserve 2 blobs rather than inserting one more in between
+                // E.g. write 0x10000~20000 over existing blobs
+                // (0x0~20000 and 0x20000~20000) is better (from subsequent reading
+                // performance point of view) to result in two deferred writes to
+                // existing blobs than having 3 blobs: 0x0~10000, 0x10000~20000, 0x30000~10000
+
+                // look for an existing mutable blob we can write into
+                auto ep = o->extent_map.seek_lextent(offset);
+                auto ep_next = end;
+                BigDeferredWriteContext head_info, tail_info;
+
+                bool will_defer = ep != end
+                                    ? head_info.can_defer(
+                                          ep, prefer_deferred_size_snapshot, block_size, offset, l)
+                                    : false;
+                auto offset_next = offset + head_info.used;
+                auto remaining = l - head_info.used;
+                if (will_defer && remaining) {
+                    will_defer = false;
+                    if (remaining <= prefer_deferred_size_snapshot) {
+                        ep_next = o->extent_map.seek_lextent(offset_next);
+                        // check if we can defer remaining totally
+                        will_defer = ep_next == end
+                                       ? false
+                                       : tail_info.can_defer(ep_next,
+                                                             prefer_deferred_size_snapshot,
+                                                             block_size,
+                                                             offset_next,
+                                                             remaining);
+                        will_defer = will_defer && remaining == tail_info.used;
+                    }
+                }
+                if (will_defer) {
+                    dout(20) << __func__ << " " << *(head_info.blob_ref) << " deferring big "
+                             << std::hex << " (0x" << head_info.b_off << "~"
+                             << head_info.blob_aligned_len() << ")" << std::dec
+                             << " write via deferred" << dendl;
+                    if (remaining) {
+                        dout(20) << __func__ << " " << *(tail_info.blob_ref) << " deferring big "
+                                 << std::hex << " (0x" << tail_info.b_off << "~"
+                                 << tail_info.blob_aligned_len() << ")" << std::dec
+                                 << " write via deferred" << dendl;
+                    }
+
+                    will_defer = head_info.apply_defer();
+                    if (!will_defer) {
+                        dout(20) << __func__ << " deferring big fell back, head isn't continuous"
+                                 << dendl;
+                    } else if (remaining) {
+                        will_defer = tail_info.apply_defer();
+                        if (!will_defer) {
+                            dout(20) << __func__
+                                     << " deferring big fell back, tail isn't continuous" << dendl;
+                        }
+                    }
+                }
+                if (will_defer) {
+                    _do_write_big_apply_deferred(txc, c, o, head_info, blp, wctx);
+                    if (remaining) {
+                        _do_write_big_apply_deferred(txc, c, o, tail_info, blp, wctx);
+                    }
+                    dout(20) << __func__ << " defer big: 0x" << std::hex << offset << "~" << l
+                             << std::dec << dendl;
+                    offset += l;
+                    length -= l;
+                    logger->inc(l_bluestore_write_big_blobs, remaining ? 2 : 1);
+                    logger->inc(l_bluestore_write_big_deferred, remaining ? 2 : 1);
+                    continue;
+                }
+            }
+            dout(20) << __func__ << " lookup for blocks to reuse..." << dendl;
+
+            o->extent_map.punch_hole(c, offset, l, &wctx->old_extents);
+
+            // seek again as punch_hole could invalidate ep
+            auto ep = o->extent_map.seek_lextent(offset);
+            auto begin = o->extent_map.extent_map.begin();
+            auto prev_ep = end;
+            if (ep != begin) {
+                prev_ep = ep;
+                --prev_ep;
+            }
+
+            auto min_off = offset >= max_bsize ? offset - max_bsize : 0;
+            // search suitable extent in both forward and reverse direction in
+            // [offset - target_max_blob_size, offset + target_max_blob_size] range
+            // then check if blob can be reused via can_reuse_blob func.
+            bool any_change;
+            do {
+                any_change = false;
+                if (ep != end && ep->logical_offset < offset + max_bsize) {
+                    dout(20) << __func__ << " considering " << *ep << " bstart 0x" << std::hex
+                             << ep->blob_start() << std::dec << dendl;
+
+                    if (offset >= ep->blob_start() &&
+                        ep->blob->can_reuse_blob(
+                            min_alloc_size, max_bsize, offset - ep->blob_start(), &l)) {
+                        b = ep->blob;
+                        b_off = offset - ep->blob_start();
+                        prev_ep = end;   // to avoid check below
+                        dout(20) << __func__ << " reuse blob " << *b << std::hex << " (0x" << b_off
+                                 << "~" << l << ")" << std::dec << dendl;
+                    } else {
+                        ++ep;
+                        any_change = true;
+                    }
+                }
+
+                if (prev_ep != end && prev_ep->logical_offset >= min_off) {
+                    dout(20) << __func__ << " considering rev " << *prev_ep << " bstart 0x"
+                             << std::hex << prev_ep->blob_start() << std::dec << dendl;
+                    if (prev_ep->blob->can_reuse_blob(
+                            min_alloc_size, max_bsize, offset - prev_ep->blob_start(), &l)) {
+                        b = prev_ep->blob;
+                        b_off = offset - prev_ep->blob_start();
+                        dout(20) << __func__ << " reuse blob " << *b << std::hex << " (0x" << b_off
+                                 << "~" << l << ")" << std::dec << dendl;
+                    } else if (prev_ep != begin) {
+                        --prev_ep;
+                        any_change = true;
+                    } else {
+                        prev_ep = end;   // to avoid useless first extent re-check
+                    }
+                }
+            } while (b == nullptr && any_change);
+        } else {
+            // trying to utilize as longer chunk as permitted in case of compression.
+            l = std::min(max_bsize, length);
+            o->extent_map.punch_hole(c, offset, l, &wctx->old_extents);
+        }   // if (!wctx->compress)
+
+        if (b == nullptr) {
+            b = c->new_blob();
+            b_off = 0;
+            new_blob = true;
+        }
+        bufferlist t;
+        blp.copy(l, t);
+        wctx->write(offset, b, l, b_off, t, b_off, l, false, new_blob);
+        dout(20) << __func__ << " schedule write big: 0x" << std::hex << offset << "~" << l
+                 << std::dec << (new_blob ? " new " : " reuse ") << *b << dendl;
+        offset += l;
+        length -= l;
+        logger->inc(l_bluestore_write_big_blobs);
+    }
+}
+```
+
+### Small-Write
+
+落在`min_alloc_size`区间内的写称为小写(small-write)。因为最小分配单元`min_alloc_size`，HDD默认`64K`，SSD默认`16K`，所以如果是一个`4KB`的IO那么只会占用到blob的一部分，剩余的空间还可以存放其他的数据。所以小写会先根据offset查找有没有可复用的blob，如果没有则生成新的blob。
+
+```cpp
+void BlueStore::_do_write_small(TransContext *txc,
+                                CollectionRef &c,
+                                OnodeRef &o,
+                                uint64_t offset,
+                                uint64_t length,
+                                bufferlist::iterator &blp,
+                                WriteContext *wctx) {
+    dout(10) << __func__ << " 0x" << std::hex << offset << "~" << length << std::dec << dendl;
+    ceph_assert(length < min_alloc_size);
+
+    uint64_t end_offs = offset + length;
+
+    logger->inc(l_bluestore_write_small);
+    logger->inc(l_bluestore_write_small_bytes, length);
+
+    bufferlist bl;
+    blp.copy(length, bl);
+
+    auto max_bsize = std::max(wctx->target_blob_size, min_alloc_size);
+    auto min_off = offset >= max_bsize ? offset - max_bsize : 0;
+    uint32_t alloc_len = min_alloc_size;
+    auto offset0 = p2align<uint64_t>(offset, alloc_len);
+
+    bool any_change;
+
+    // search suitable extent in both forward and reverse direction in
+    // [offset - target_max_blob_size, offset + target_max_blob_size] range
+    // then check if blob can be reused via can_reuse_blob func or apply
+    // direct/deferred write (the latter for extents including or higher
+    // than 'offset' only).
+    o->extent_map.fault_range(db, min_off, offset + max_bsize - min_off);
+
+    // On zoned devices, the first goal is to support non-overwrite workloads,
+    // such as RGW, with large, aligned objects.  Therefore, for user writes
+    // _do_write_small should not trigger.  OSDs, however, write and update a tiny
+    // amount of metadata, such as OSD maps, to disk.  For those cases, we
+    // temporarily just pad them to min_alloc_size and write them to a new place
+    // on every update.
+    if (bdev->is_smr()) {
+        BlobRef b = c->new_blob();
+        uint64_t b_off = p2phase<uint64_t>(offset, alloc_len);
+        uint64_t b_off0 = b_off;
+        _pad_zeros(&bl, &b_off0, min_alloc_size);
+        o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
+        wctx->write(offset, b, alloc_len, b_off0, bl, b_off, length, false, true);
+        return;
+    }
+
+    // Look for an existing mutable blob we can use.
+    auto begin = o->extent_map.extent_map.begin();
+    auto end = o->extent_map.extent_map.end();
+    auto ep = o->extent_map.seek_lextent(offset);
+    if (ep != begin) {
+        --ep;
+        if (ep->blob_end() <= offset) {
+            ++ep;
+        }
+    }
+    auto prev_ep = end;
+    if (ep != begin) {
+        prev_ep = ep;
+        --prev_ep;
+    }
+
+    boost::container::flat_set<const bluestore_blob_t *> inspected_blobs;
+    // We don't want to have more blobs than min alloc units fit
+    // into 2 max blobs
+    size_t blob_threshold = max_blob_size / min_alloc_size * 2 + 1;
+    bool above_blob_threshold = false;
+
+    inspected_blobs.reserve(blob_threshold);
+
+    uint64_t max_off = 0;
+    auto start_ep = ep;
+    auto end_ep = ep;   // exclusively
+    do {
+        any_change = false;
+
+        if (ep != end && ep->logical_offset < offset + max_bsize) {
+            BlobRef b = ep->blob;
+            if (!above_blob_threshold) {
+                inspected_blobs.insert(&b->get_blob());
+                above_blob_threshold = inspected_blobs.size() >= blob_threshold;
+            }
+            max_off = ep->logical_end();
+            auto bstart = ep->blob_start();
+
+            dout(20) << __func__ << " considering " << *b << " bstart 0x" << std::hex << bstart
+                     << std::dec << dendl;
+            if (bstart >= end_offs) {
+                dout(20) << __func__ << " ignoring distant " << *b << dendl;
+            } else if (!b->get_blob().is_mutable()) {
+                dout(20) << __func__ << " ignoring immutable " << *b << dendl;
+            } else if (ep->logical_offset % min_alloc_size != ep->blob_offset % min_alloc_size) {
+                dout(20) << __func__ << " ignoring offset-skewed " << *b << dendl;
+            } else {
+                uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
+                // can we pad our head/tail out with zeros?
+                uint64_t head_pad, tail_pad;
+                head_pad = p2phase(offset, chunk_size);
+                tail_pad = p2nphase(end_offs, chunk_size);
+                if (head_pad || tail_pad) {
+                    o->extent_map.fault_range(
+                        db, offset - head_pad, end_offs - offset + head_pad + tail_pad);
+                }
+                if (head_pad && o->extent_map.has_any_lextents(offset - head_pad, head_pad)) {
+                    head_pad = 0;
+                }
+                if (tail_pad && o->extent_map.has_any_lextents(end_offs, tail_pad)) {
+                    tail_pad = 0;
+                }
+
+                uint64_t b_off = offset - head_pad - bstart;
+                uint64_t b_len = length + head_pad + tail_pad;
+
+                // direct write into unused blocks of an existing mutable blob?
+                if ((b_off % chunk_size == 0 && b_len % chunk_size == 0) &&
+                    b->get_blob().get_ondisk_length() >= b_off + b_len &&
+                    b->get_blob().is_unused(b_off, b_len) &&
+                    b->get_blob().is_allocated(b_off, b_len)) {
+                    _apply_padding(head_pad, tail_pad, bl);
+
+                    dout(20) << __func__ << "  write to unused 0x" << std::hex << b_off << "~"
+                             << b_len << " pad 0x" << head_pad << " + 0x" << tail_pad << std::dec
+                             << " of mutable " << *b << dendl;
+                    _buffer_cache_write(
+                        txc, b, b_off, bl, wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
+
+                    if (!g_conf()->bluestore_debug_omit_block_device_write) {
+                        if (b_len < prefer_deferred_size) {
+                            dout(20) << __func__ << " deferring small 0x" << std::hex << b_len
+                                     << std::dec << " unused write via deferred" << dendl;
+                            bluestore_deferred_op_t *op = _get_deferred_op(txc, bl.length());
+                            op->op = bluestore_deferred_op_t::OP_WRITE;
+                            b->get_blob().map(b_off, b_len, [&](uint64_t offset, uint64_t length) {
+                                op->extents.emplace_back(bluestore_pextent_t(offset, length));
+                                return 0;
+                            });
+                            op->data = bl;
+                        } else {
+                            b->get_blob().map_bl(b_off, bl, [&](uint64_t offset, bufferlist &t) {
+                                bdev->aio_write(offset, t, &txc->ioc, wctx->buffered);
+                            });
+                        }
+                    }
+                    b->dirty_blob().calc_csum(b_off, bl);
+                    dout(20) << __func__ << "  lex old " << *ep << dendl;
+                    Extent *le = o->extent_map.set_lextent(
+                        c, offset, b_off + head_pad, length, b, &wctx->old_extents);
+                    b->dirty_blob().mark_used(le->blob_offset, le->length);
+
+                    txc->statfs_delta.stored() += le->length;
+                    dout(20) << __func__ << "  lex " << *le << dendl;
+                    logger->inc(l_bluestore_write_small_unused);
+                    return;
+                }
+                // read some data to fill out the chunk?
+                uint64_t head_read = p2phase(b_off, chunk_size);
+                uint64_t tail_read = p2nphase(b_off + b_len, chunk_size);
+                if ((head_read || tail_read) &&
+                    (b->get_blob().get_ondisk_length() >= b_off + b_len + tail_read) &&
+                    head_read + tail_read < min_alloc_size) {
+                    b_off -= head_read;
+                    b_len += head_read + tail_read;
+
+                } else {
+                    head_read = tail_read = 0;
+                }
+
+                // chunk-aligned deferred overwrite?
+                if (b->get_blob().get_ondisk_length() >= b_off + b_len && b_off % chunk_size == 0 &&
+                    b_len % chunk_size == 0 && b->get_blob().is_allocated(b_off, b_len)) {
+
+                    _apply_padding(head_pad, tail_pad, bl);
+
+                    dout(20) << __func__ << "  reading head 0x" << std::hex << head_read
+                             << " and tail 0x" << tail_read << std::dec << dendl;
+                    if (head_read) {
+                        bufferlist head_bl;
+                        int r = _do_read(
+                            c.get(), o, offset - head_pad - head_read, head_read, head_bl, 0);
+                        ceph_assert(r >= 0 && r <= (int)head_read);
+                        size_t zlen = head_read - r;
+                        if (zlen) {
+                            head_bl.append_zero(zlen);
+                            logger->inc(l_bluestore_write_pad_bytes, zlen);
+                        }
+                        head_bl.claim_append(bl);
+                        bl.swap(head_bl);
+                        logger->inc(l_bluestore_write_penalty_read_ops);
+                    }
+                    if (tail_read) {
+                        bufferlist tail_bl;
+                        int r =
+                            _do_read(c.get(), o, offset + length + tail_pad, tail_read, tail_bl, 0);
+                        ceph_assert(r >= 0 && r <= (int)tail_read);
+                        size_t zlen = tail_read - r;
+                        if (zlen) {
+                            tail_bl.append_zero(zlen);
+                            logger->inc(l_bluestore_write_pad_bytes, zlen);
+                        }
+                        bl.claim_append(tail_bl);
+                        logger->inc(l_bluestore_write_penalty_read_ops);
+                    }
+                    logger->inc(l_bluestore_write_small_pre_read);
+
+                    _buffer_cache_write(
+                        txc, b, b_off, bl, wctx->buffered ? 0 : Buffer::FLAG_NOCACHE);
+
+                    b->dirty_blob().calc_csum(b_off, bl);
+
+                    if (!g_conf()->bluestore_debug_omit_block_device_write) {
+                        bluestore_deferred_op_t *op = _get_deferred_op(txc, bl.length());
+                        op->op = bluestore_deferred_op_t::OP_WRITE;
+                        int r =
+                            b->get_blob().map(b_off, b_len, [&](uint64_t offset, uint64_t length) {
+                                op->extents.emplace_back(bluestore_pextent_t(offset, length));
+                                return 0;
+                            });
+                        ceph_assert(r == 0);
+                        op->data = std::move(bl);
+                        dout(20) << __func__ << "  deferred write 0x" << std::hex << b_off << "~"
+                                 << b_len << std::dec << " of mutable " << *b << " at "
+                                 << op->extents << dendl;
+                    }
+
+                    Extent *le = o->extent_map.set_lextent(
+                        c, offset, offset - bstart, length, b, &wctx->old_extents);
+                    b->dirty_blob().mark_used(le->blob_offset, le->length);
+                    txc->statfs_delta.stored() += le->length;
+                    dout(20) << __func__ << "  lex " << *le << dendl;
+                    return;
+                }
+                // try to reuse blob if we can
+                if (b->can_reuse_blob(min_alloc_size, max_bsize, offset0 - bstart, &alloc_len)) {
+                    ceph_assert(alloc_len == min_alloc_size);   // expecting data always
+                                                                // fit into reused blob
+                    // Need to check for pending writes desiring to
+                    // reuse the same pextent. The rationale is that during GC two chunks
+                    // from garbage blobs(compressed?) can share logical space within the same
+                    // AU. That's in turn might be caused by unaligned len in clone_range2.
+                    // Hence the second write will fail in an attempt to reuse blob at
+                    // do_alloc_write().
+                    if (!wctx->has_conflict(b, offset0, offset0 + alloc_len, min_alloc_size)) {
+
+                        // we can't reuse pad_head/pad_tail since they might be truncated
+                        // due to existent extents
+                        uint64_t b_off = offset - bstart;
+                        uint64_t b_off0 = b_off;
+                        _pad_zeros(&bl, &b_off0, chunk_size);
+
+                        dout(20) << __func__ << " reuse blob " << *b << std::hex << " (0x" << b_off0
+                                 << "~" << bl.length() << ")"
+                                 << " (0x" << b_off << "~" << length << ")" << std::dec << dendl;
+
+                        o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
+                        wctx->write(offset, b, alloc_len, b_off0, bl, b_off, length, false, false);
+                        logger->inc(l_bluestore_write_small_unused);
+                        return;
+                    }
+                }
+            }
+            ++ep;
+            end_ep = ep;
+            any_change = true;
+        }   // if (ep != end && ep->logical_offset < offset + max_bsize)
+
+        // check extent for reuse in reverse order
+        if (prev_ep != end && prev_ep->logical_offset >= min_off) {
+            BlobRef b = prev_ep->blob;
+            if (!above_blob_threshold) {
+                inspected_blobs.insert(&b->get_blob());
+                above_blob_threshold = inspected_blobs.size() >= blob_threshold;
+            }
+            start_ep = prev_ep;
+            auto bstart = prev_ep->blob_start();
+            dout(20) << __func__ << " considering " << *b << " bstart 0x" << std::hex << bstart
+                     << std::dec << dendl;
+            if (b->can_reuse_blob(min_alloc_size, max_bsize, offset0 - bstart, &alloc_len)) {
+                ceph_assert(alloc_len == min_alloc_size);   // expecting data always
+                                                            // fit into reused blob
+                // Need to check for pending writes desiring to
+                // reuse the same pextent. The rationale is that during GC two chunks
+                // from garbage blobs(compressed?) can share logical space within the same
+                // AU. That's in turn might be caused by unaligned len in clone_range2.
+                // Hence the second write will fail in an attempt to reuse blob at
+                // do_alloc_write().
+                if (!wctx->has_conflict(b, offset0, offset0 + alloc_len, min_alloc_size)) {
+
+                    uint64_t chunk_size = b->get_blob().get_chunk_size(block_size);
+                    uint64_t b_off = offset - bstart;
+                    uint64_t b_off0 = b_off;
+                    _pad_zeros(&bl, &b_off0, chunk_size);
+
+                    dout(20) << __func__ << " reuse blob " << *b << std::hex << " (0x" << b_off0
+                             << "~" << bl.length() << ")"
+                             << " (0x" << b_off << "~" << length << ")" << std::dec << dendl;
+
+                    o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
+                    wctx->write(offset, b, alloc_len, b_off0, bl, b_off, length, false, false);
+                    logger->inc(l_bluestore_write_small_unused);
+                    return;
+                }
+            }
+            if (prev_ep != begin) {
+                --prev_ep;
+                any_change = true;
+            } else {
+                prev_ep = end;   // to avoid useless first extent re-check
+            }
+        }   // if (prev_ep != end && prev_ep->logical_offset >= min_off)
+    } while (any_change);
+
+    if (above_blob_threshold) {
+        dout(10) << __func__ << " request GC, blobs >= " << inspected_blobs.size() << " "
+                 << std::hex << min_off << "~" << max_off << std::dec << dendl;
+        ceph_assert(start_ep != end_ep);
+        for (auto ep = start_ep; ep != end_ep; ++ep) {
+            dout(20) << __func__ << " inserting for GC " << std::hex << ep->logical_offset << "~"
+                     << ep->length << std::dec << dendl;
+
+            wctx->extents_to_gc.union_insert(ep->logical_offset, ep->length);
+        }
+        // insert newly written extent to GC
+        wctx->extents_to_gc.union_insert(offset, length);
+        dout(20) << __func__ << " inserting (last) for GC " << std::hex << offset << "~" << length
+                 << std::dec << dendl;
+    }
+    // new blob.
+    BlobRef b = c->new_blob();
+    uint64_t b_off = p2phase<uint64_t>(offset, alloc_len);
+    uint64_t b_off0 = b_off;
+    _pad_zeros(&bl, &b_off0, block_size);
+    o->extent_map.punch_hole(c, offset, length, &wctx->old_extents);
+    wctx->write(offset,
+                b,
+                alloc_len,
+                b_off0,
+                bl,
+                b_off,
+                length,
+                min_alloc_size != block_size,   // use 'unused' bitmap when alloc granularity
+                                                // doesn't match disk one only
+                true);
+
+    return;
+}
+```
+
+### Transaction
+
+写操作将在事务中被使用（`queue_transactions`）。
+
+```cpp
+// ---------------------------
+// transactions
+
+int BlueStore::queue_transactions(CollectionHandle &ch,
+                                  vector<Transaction> &tls,
+                                  TrackedOpRef op,
+                                  ThreadPool::TPHandle *handle) {
+    FUNCTRACE(cct);
+    list<Context *> on_applied, on_commit, on_applied_sync;
+    ObjectStore::Transaction::collect_contexts(tls, &on_applied, &on_commit, &on_applied_sync);
+
+    ...
+    OpSequencer *osr = c->osr.get();
+    ...
+
+    // prepare
+    TransContext *txc = _txc_create(static_cast<Collection *>(ch.get()), osr, &on_commit, op);
+
+    // With HM-SMR drives (and ZNS SSDs) we want the I/O allocation and I/O
+    // submission to happen atomically because if I/O submission happens in a
+    // different order than I/O allocation, we end up issuing non-sequential
+    // writes to the drive.  This is a temporary solution until ZONE APPEND
+    // support matures in the kernel.  For more information please see:
+    // https://www.usenix.org/conference/vault20/presentation/bjorling
+    if (bdev->is_smr()) {
+        atomic_alloc_and_submit_lock.lock();
+    }
+    for (vector<Transaction>::iterator p = tls.begin(); p != tls.end(); ++p) {
+        txc->bytes += (*p).get_num_bytes();
+        _txc_add_transaction(txc, &(*p));
+    }
+    _txc_calc_cost(txc);
+
+    _txc_write_nodes(txc, txc->t);
+
+    // journal deferred items
+    if (txc->deferred_txn) {
+        txc->deferred_txn->seq = ++deferred_seq;
+        bufferlist bl;
+        encode(*txc->deferred_txn, bl);
+        string key;
+        get_deferred_key(txc->deferred_txn->seq, &key);
+        txc->t->set(PREFIX_DEFERRED, key, bl);
+    }
+
+    _txc_finalize_kv(txc, txc->t);
+    ...
+
+    // execute (start)
+    _txc_state_proc(txc);
+    ...
+    return 0;
+}
+```
+
+事务的`state_prepare`阶段会调用`_txc_add_transaction`方法，把OSD事务转换为BlueStore事务。
+
+```cpp
+void BlueStore::_txc_add_transaction(TransContext *txc, Transaction *t) {
+    Transaction::iterator i = t->begin();
+
+    _dump_transaction<30>(cct, t);
+
+    vector<CollectionRef> cvec(i.colls.size());
+    unsigned j = 0;
+    for (vector<coll_t>::iterator p = i.colls.begin(); p != i.colls.end(); ++p, ++j) {
+        cvec[j] = _get_collection(*p);
+    }
+
+    vector<OnodeRef> ovec(i.objects.size());
+
+    for (int pos = 0; i.have_op(); ++pos) {
+        Transaction::Op *op = i.decode_op();
+        int r = 0;
+
+        // no coll or obj
+        if (op->op == Transaction::OP_NOP)
+            continue;
+
+
+        // collection operations
+        CollectionRef &c = cvec[op->cid];
+
+        // initialize osd_pool_id and do a smoke test that all collections belong
+        // to the same pool
+        spg_t pgid;
+        if (!!c ? c->cid.is_pg(&pgid) : false) {
+            ceph_assert(txc->osd_pool_id == META_POOL_ID || txc->osd_pool_id == pgid.pool());
+            txc->osd_pool_id = pgid.pool();
+        }
+
+        switch (op->op) {
+        case Transaction::OP_RMCOLL: {
+            const coll_t &cid = i.get_cid(op->cid);
+            r = _remove_collection(txc, cid, &c);
+            if (!r)
+                continue;
+        } break;
+
+        case Transaction::OP_MKCOLL: {
+            ceph_assert(!c);
+            const coll_t &cid = i.get_cid(op->cid);
+            r = _create_collection(txc, cid, op->split_bits, &c);
+            if (!r)
+                continue;
+        } break;
+
+        case Transaction::OP_SPLIT_COLLECTION:
+            ceph_abort_msg("deprecated");
+            break;
+
+        case Transaction::OP_SPLIT_COLLECTION2: {
+            uint32_t bits = op->split_bits;
+            uint32_t rem = op->split_rem;
+            r = _split_collection(txc, c, cvec[op->dest_cid], bits, rem);
+            if (!r)
+                continue;
+        } break;
+
+        case Transaction::OP_MERGE_COLLECTION: {
+            uint32_t bits = op->split_bits;
+            r = _merge_collection(txc, &c, cvec[op->dest_cid], bits);
+            if (!r)
+                continue;
+        } break;
+
+        case Transaction::OP_COLL_HINT: {
+            uint32_t type = op->hint;
+            bufferlist hint;
+            i.decode_bl(hint);
+            auto hiter = hint.cbegin();
+            if (type == Transaction::COLL_HINT_EXPECTED_NUM_OBJECTS) {
+                uint32_t pg_num;
+                uint64_t num_objs;
+                decode(pg_num, hiter);
+                decode(num_objs, hiter);
+                dout(10) << __func__ << " collection hint objects is a no-op, "
+                         << " pg_num " << pg_num << " num_objects " << num_objs << dendl;
+            } else {
+                // Ignore the hint
+                dout(10) << __func__ << " unknown collection hint " << type << dendl;
+            }
+            continue;
+        } break;
+
+        case Transaction::OP_COLL_SETATTR:
+            r = -EOPNOTSUPP;
+            break;
+
+        case Transaction::OP_COLL_RMATTR:
+            r = -EOPNOTSUPP;
+            break;
+
+        case Transaction::OP_COLL_RENAME:
+            ceph_abort_msg("not implemented");
+            break;
+        }
+        if (r < 0) {
+            derr << __func__ << " error " << cpp_strerror(r) << " not handled on operation "
+                 << op->op << " (op " << pos << ", counting from 0)" << dendl;
+            _dump_transaction<0>(cct, t);
+            ceph_abort_msg("unexpected error");
+        }
+
+        // these operations implicity create the object
+        bool create = false;
+        if (op->op == Transaction::OP_TOUCH || op->op == Transaction::OP_CREATE ||
+            op->op == Transaction::OP_WRITE || op->op == Transaction::OP_ZERO) {
+            create = true;
+        }
+
+        // object operations
+        std::unique_lock l(c->lock);
+        OnodeRef &o = ovec[op->oid];
+        if (!o) {
+            ghobject_t oid = i.get_oid(op->oid);
+            o = c->get_onode(oid, create, op->op == Transaction::OP_CREATE);
+        }
+        if (!create && (!o || !o->exists)) {
+            dout(10) << __func__ << " op " << op->op << " got ENOENT on " << i.get_oid(op->oid)
+                     << dendl;
+            r = -ENOENT;
+            goto endop;
+        }
+
+        switch (op->op) {
+        case Transaction::OP_CREATE:
+        case Transaction::OP_TOUCH:
+            r = _touch(txc, c, o);
+            break;
+
+        case Transaction::OP_WRITE: {
+            uint64_t off = op->off;
+            uint64_t len = op->len;
+            uint32_t fadvise_flags = i.get_fadvise_flags();
+            bufferlist bl;
+            i.decode_bl(bl);
+            r = _write(txc, c, o, off, len, bl, fadvise_flags);
+        } break;
+
+        case Transaction::OP_ZERO: {
+            uint64_t off = op->off;
+            uint64_t len = op->len;
+            r = _zero(txc, c, o, off, len);
+        } break;
+
+        case Transaction::OP_TRIMCACHE: {
+            // deprecated, no-op
+        } break;
+
+        case Transaction::OP_TRUNCATE: {
+            uint64_t off = op->off;
+            r = _truncate(txc, c, o, off);
+        } break;
+
+        case Transaction::OP_REMOVE: {
+            r = _remove(txc, c, o);
+        } break;
+
+        case Transaction::OP_SETATTR: {
+            string name = i.decode_string();
+            bufferptr bp;
+            i.decode_bp(bp);
+            r = _setattr(txc, c, o, name, bp);
+        } break;
+
+        case Transaction::OP_SETATTRS: {
+            map<string, bufferptr> aset;
+            i.decode_attrset(aset);
+            r = _setattrs(txc, c, o, aset);
+        } break;
+
+        case Transaction::OP_RMATTR: {
+            string name = i.decode_string();
+            r = _rmattr(txc, c, o, name);
+        } break;
+
+        case Transaction::OP_RMATTRS: {
+            r = _rmattrs(txc, c, o);
+        } break;
+
+        case Transaction::OP_CLONE: {
+            OnodeRef &no = ovec[op->dest_oid];
+            if (!no) {
+                const ghobject_t &noid = i.get_oid(op->dest_oid);
+                no = c->get_onode(noid, true);
+            }
+            r = _clone(txc, c, o, no);
+        } break;
+
+        case Transaction::OP_CLONERANGE:
+            ceph_abort_msg("deprecated");
+            break;
+
+        case Transaction::OP_CLONERANGE2: {
+            OnodeRef &no = ovec[op->dest_oid];
+            if (!no) {
+                const ghobject_t &noid = i.get_oid(op->dest_oid);
+                no = c->get_onode(noid, true);
+            }
+            uint64_t srcoff = op->off;
+            uint64_t len = op->len;
+            uint64_t dstoff = op->dest_off;
+            r = _clone_range(txc, c, o, no, srcoff, len, dstoff);
+        } break;
+
+        case Transaction::OP_COLL_ADD:
+            ceph_abort_msg("not implemented");
+            break;
+
+        case Transaction::OP_COLL_REMOVE:
+            ceph_abort_msg("not implemented");
+            break;
+
+        case Transaction::OP_COLL_MOVE:
+            ceph_abort_msg("deprecated");
+            break;
+
+        case Transaction::OP_COLL_MOVE_RENAME:
+        case Transaction::OP_TRY_RENAME: {
+            ceph_assert(op->cid == op->dest_cid);
+            const ghobject_t &noid = i.get_oid(op->dest_oid);
+            OnodeRef &no = ovec[op->dest_oid];
+            if (!no) {
+                no = c->get_onode(noid, false);
+            }
+            r = _rename(txc, c, o, no, noid);
+        } break;
+
+        case Transaction::OP_OMAP_CLEAR: {
+            r = _omap_clear(txc, c, o);
+        } break;
+        case Transaction::OP_OMAP_SETKEYS: {
+            bufferlist aset_bl;
+            i.decode_attrset_bl(&aset_bl);
+            r = _omap_setkeys(txc, c, o, aset_bl);
+        } break;
+        case Transaction::OP_OMAP_RMKEYS: {
+            bufferlist keys_bl;
+            i.decode_keyset_bl(&keys_bl);
+            r = _omap_rmkeys(txc, c, o, keys_bl);
+        } break;
+        case Transaction::OP_OMAP_RMKEYRANGE: {
+            string first, last;
+            first = i.decode_string();
+            last = i.decode_string();
+            r = _omap_rmkey_range(txc, c, o, first, last);
+        } break;
+        case Transaction::OP_OMAP_SETHEADER: {
+            bufferlist bl;
+            i.decode_bl(bl);
+            r = _omap_setheader(txc, c, o, bl);
+        } break;
+
+        case Transaction::OP_SETALLOCHINT: {
+            r = _set_alloc_hint(
+                txc, c, o, op->expected_object_size, op->expected_write_size, op->hint);
+        } break;
+
+        default:
+            derr << __func__ << " bad op " << op->op << dendl;
+            ceph_abort();
+        }
+
+    endop:
+        if (r < 0) {
+            bool ok = false;
+
+            if (r == -ENOENT &&
+                !(op->op == Transaction::OP_CLONERANGE || op->op == Transaction::OP_CLONE ||
+                  op->op == Transaction::OP_CLONERANGE2 || op->op == Transaction::OP_COLL_ADD ||
+                  op->op == Transaction::OP_SETATTR || op->op == Transaction::OP_SETATTRS ||
+                  op->op == Transaction::OP_RMATTR || op->op == Transaction::OP_OMAP_SETKEYS ||
+                  op->op == Transaction::OP_OMAP_RMKEYS ||
+                  op->op == Transaction::OP_OMAP_RMKEYRANGE ||
+                  op->op == Transaction::OP_OMAP_SETHEADER))
+                // -ENOENT is usually okay
+                ok = true;
+            if (r == -ENODATA)
+                ok = true;
+
+            if (!ok) {
+                const char *msg = "unexpected error code";
+
+                if (r == -ENOENT &&
+                    (op->op == Transaction::OP_CLONERANGE || op->op == Transaction::OP_CLONE ||
+                     op->op == Transaction::OP_CLONERANGE2))
+                    msg = "ENOENT on clone suggests osd bug";
+
+                if (r == -ENOSPC)
+                    // For now, if we hit _any_ ENOSPC, crash, before we do any damage
+                    // by partially applying transactions.
+                    msg = "ENOSPC from bluestore, misconfigured cluster";
+
+                if (r == -ENOTEMPTY) {
+                    msg = "ENOTEMPTY suggests garbage data in osd data dir";
+                }
+
+                derr << __func__ << " error " << cpp_strerror(r) << " not handled on operation "
+                     << op->op << " (op " << pos << ", counting from 0)" << dendl;
+                derr << msg << dendl;
+                _dump_transaction<0>(cct, t);
+                ceph_abort_msg("unexpected error");
+            }
+        }
+    }
+}
+```
+
+![F8](./F8.png)
+
+`BlueStore::_write`将调用`_do_write`，而`_do_write`将调用`_do_write_data`和`_do_alloc_write`：
+* `_do_write_data` - 进行大写和小写，将数据放在WriteContext，此时数据还在内存。
+* `_do_alloc_write` - Allocator分配空间，并调用`aio_write`将数据提交到`libaio`队列。
+
+### Simple-Write
+
+simple-write和deferred-write抽象了基类`AioContext`，当IO完成时调用回调函数`aio_finish`。
+
+```cpp
+struct AioContext {
+    virtual void aio_finish(BlueStore *store) = 0;
+    virtual ~AioContext() {
+    }
+};
+```
+
+simple-write对应的上下文是`TransContext`，处理COW场景（big-write和非覆盖small-write），通常在`state_prepare`阶段将IO分为big-write和small-write的时候就已经调用`aio_write`提交到`libaio`队列了，后续会通过`_aio_thread`线程收割完成的AIO事件。
+
+```cpp
+struct TransContext final : public AioContext {
+    ...
+    void aio_finish(BlueStore *store) override {
+        store->txc_aio_finish(this);
+    }
+    ...
+};
+```
+
+在处理simple-write时，需要考虑offset、length是否对齐到block_size(4KB)以进行补零对齐的操作。
+
+所以BlueStore在处理数据写入时，需要将数据对齐到block_size，提升写磁盘效率。
+
+### Deferred-Write
+
+deferred-write处理RMW场景（覆盖small-write）以及小于`prefer_deferred_size`的small-write，对应的结构是`DeferredBatch`。
+
+```cpp
+struct DeferredBatch final : public AioContext {
+    struct deferred_io {
+        bufferlist bl;  ///< data
+        uint64_t seq;   ///< deferred transaction seq
+    };
+
+    // txcs in this batch
+    deferred_queue_t txcs;
+
+    // aio 完成的回调函数
+    void aio_finish(BlueStore *store) override {
+        store->_deferred_aio_finish(osr);
+    }
+};
+```
+
+deferred-write在`state_prepare`阶段会将对应的数据写入RocksDB，在之后会进行RMW操作以及Cleanup RocksDB中的deferred-write的数据。
+
+### Summary
+
+总体流程如下。
+
+![F9](./F9.png)
+
 ## Cache
 
 BlueStore抛弃了文件系统，直接管理裸设备，那么便用不了文件系统的Cache机制，需要自己实现元数据和数据的Cache，缓存系统的性能直接影响到了BlueStore的性能。
 
-BlueStore有两种Cache算法：`LRU`和`2Q`。元数据使用`LRUCache`，数据使用`2QCache`。
+BlueStore有两种Cache算法：`LRU`和`2Q`。默认使用`2QCache`，缓存的元数据为`Onode`，数据为`Buffer`：
+* `LRUCache` - Onode和Buffer各使用一个链表，采用LRU淘汰策略。
+* `TwoQCache`：Onode使用一个链表，采用LRU策略；Buffer使用三个链表，采用2Q策略。
 
-## I/0 Operations
+```cpp
+int OSD::init() {
+    ...
+    store->set_cache_shards(get_num_cache_shards());
+    ...
+}
 
-### Read Operations
+size_t OSD::get_num_cache_shards() {
+    return cct->_conf.get_val<Option::size_t>("osd_num_cache_shards");
+}
+```
 
-处理读请求会先从RocksDB找到对应的磁盘空间，然后通过`BlockDevice`读出数据。
+### Metadata
 
-### Write Operations
+BlueStore主要的元数据有两种类型：
+* Collection - 常驻内存。
+* Onode - 缓存。
 
-处理写请求时会进入事物的状态机，简单流程就是先写数据，然后再原子的写入对象元数据和分配结果元数据。写入数据如果是对齐写入，则最终会调用`do_write_big`；如果是非对齐写，最终会调用`do_write_small`。
+#### Collection
+
+Collocation对应PG在BlueStore中的内存数据结构，Cnode对应PG在BlueStore中的磁盘数据结构。
+
+```cpp
+struct Collection : public CollectionImpl {
+    BlueStore *store;
+    // 每个PG有一个osr，在BlueStore层面保证读写事物的顺序性和并发性
+    OpSequencerRef osr;
+    // PG对应的 cache shard
+    BufferCacheShard *cache;   ///< our cache shard
+    // pg的磁盘结构
+    bluestore_cnode_t cnode;
+    ceph::shared_mutex lock =
+        ceph::make_shared_mutex("BlueStore::Collection::lock", true, false);
+
+    bool exists;
+
+    SharedBlobSet shared_blob_set;   ///< open SharedBlobs
+
+    // cache缓存onode
+    // cache onodes on a per-collection basis to avoid lock
+    // contention.
+    OnodeSpace onode_space;
+
+    // pool options
+    pool_opts_t pool_opts;
+    ContextQueue *commit_queue;
+};
+```
