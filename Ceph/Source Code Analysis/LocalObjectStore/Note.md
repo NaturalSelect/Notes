@@ -2079,6 +2079,8 @@ int BitmapFreelistManager::create(uint64_t new_size,
 }
 ```
 
+create/init 均会调用下面这个函数，初始化block/key的掩码。
+
 ```cpp
 void BitmapFreelistManager::_init_misc() {
     bufferptr z(blocks_per_key >> 3);
@@ -2152,7 +2154,7 @@ bool Merge(const rocksdb::Slice &key,
 }
 ```
 
-### Allocate
+### Allocate & Release
 
 分配和释放空间两种操作是完全一样的，都是进行异或操作（调用`_xor`）。
 
