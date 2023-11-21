@@ -6718,3 +6718,2251 @@ BackfillInterval的扫描的对象列表：`bi->begin`为对象`obj1（1，3）`
 * 对象`obj4`发送删除操作，不需要修复了，所以需要从对象列表中删除。
 
 Ceph的Backfill过程是扫描OSD上该PG的所有对象列表，和主OSD做对比，修复不存在的或者版本不一致的对象，同时删除多余的对象。
+
+## Scrub
+
+Scrub主要是为了检查磁盘数据的静默错误，在英文中被称为：Silent Data Corruption，大家都知道硬盘最核心的使命是正确的读取和写入数据，在读、写失败的情况下及时抛出异常，但是在某些场景下，写入成功，读取的时候才发现数据已经损坏，这就是静默错误，一般静默错误产生原因有这几种：
+* 硬件错误。
+* 传输过程信噪干扰。
+* 软件bug。
+* 固件bug。
+
+Ceph的Scrub功能实现了在线检查，即不中断系统当前读写请求，客户端可以继续完成读写访问。整个系统并不会暂停，但是后台正在进行Scrub的对象要被锁定暂时阻止访问，直到该对象完成Scrub操作后才能解锁允许访问。
+
+对于每个 pg，Ceph生成所有对象的列表，并比较每个对象多个副本，以确保没有对象丢失或数据不一致。Ceph的scrub主要分两种：
+* Scrub - 对比对象各个副本的元数据来检查元数据的一致性。
+* Deep scrub - 检查对象各个副本数据内容是否一致，耗时长，占用IO资源多。
+
+scrub 对于数据一致性十分重要，但它会对集群的性能会带来一些负面的影响，主要是会和业务IO竞争资源。
+
+![F25](./F25.png)
+
+### Trigger
+
+Scrub的调度决定了一个PG何时启动Scrub扫描机制。主要有以下方式：
+* 手动立即启动执行扫描。
+* 在后台设置一定的时间间隔，按照间隔的时间来启动（可以控制启动的时间段）。比如默认时间为一天执行一次。
+
+```cpp
+void OSD::tick_without_osd_lock() {
+    ceph_assert(ceph_mutex_is_locked(tick_timer_lock));
+    dout(10) << "tick_without_osd_lock" << dendl;
+
+    logger->set(l_osd_cached_crc, ceph::buffer::get_cached_crc());
+    logger->set(l_osd_cached_crc_adjusted, ceph::buffer::get_cached_crc_adjusted());
+    logger->set(l_osd_missed_crc, ceph::buffer::get_missed_crc());
+
+    // refresh osd stats
+    struct store_statfs_t stbuf;
+    osd_alert_list_t alerts;
+    int r = store->statfs(&stbuf, &alerts);
+    ceph_assert(r == 0);
+    service.set_statfs(stbuf, alerts);
+
+    // osd_lock is not being held, which means the OSD state
+    // might change when doing the monitor report
+    if (is_active() || is_waiting_for_healthy()) {
+        {
+            std::lock_guard l{heartbeat_lock};
+            heartbeat_check();
+        }
+        map_lock.lock_shared();
+        std::lock_guard l(mon_report_lock);
+
+        // mon report?
+        utime_t now = ceph_clock_now();
+        if (service.need_fullness_update() ||
+            now - last_mon_report > cct->_conf->osd_mon_report_interval) {
+            last_mon_report = now;
+            send_full_update();
+            send_failures();
+        }
+        map_lock.unlock_shared();
+
+        epoch_t max_waiting_epoch = 0;
+        for (auto s : shards) {
+            max_waiting_epoch = std::max(max_waiting_epoch, s->get_max_waiting_epoch());
+        }
+        if (max_waiting_epoch > get_osdmap()->get_epoch()) {
+            dout(20) << __func__ << " max_waiting_epoch " << max_waiting_epoch
+                     << ", requesting new map" << dendl;
+            osdmap_subscribe(superblock.newest_map + 1, false);
+        }
+    }
+
+    if (is_active()) {
+        if (!scrub_random_backoff()) {
+            // schedule scrub operation
+            sched_scrub();
+        }
+        service.promote_throttle_recalibrate();
+        resume_creating_pg();
+        bool need_send_beacon = false;
+        const auto now = ceph::coarse_mono_clock::now();
+        {
+            // borrow lec lock to pretect last_sent_beacon from changing
+            std::lock_guard l{min_last_epoch_clean_lock};
+            const auto elapsed = now - last_sent_beacon;
+            if (std::chrono::duration_cast<std::chrono::seconds>(elapsed).count() >
+                cct->_conf->osd_beacon_report_interval) {
+                need_send_beacon = true;
+            }
+        }
+        if (need_send_beacon) {
+            send_beacon(now);
+        }
+    }
+
+    mgrc.update_daemon_health(get_health_metrics());
+    service.kick_recovery_queue();
+    tick_timer_without_osd_lock.add_event_after(get_tick_interval(),
+                                                new C_Tick_WithoutOSDLock(this));
+}
+```
+
+`OSD::tick_without_osd_lock`会以一定概率（`!scrub_random_backoff`）定时调用`sched_scrub`。
+
+```cpp
+bool OSD::scrub_random_backoff() {
+    bool coin_flip = (rand() / (double)RAND_MAX >= cct->_conf->osd_scrub_backoff_ratio);
+    if (!coin_flip) {
+        dout(20) << "scrub_random_backoff lost coin flip, randomly backing off" << dendl;
+        return true;
+    }
+    return false;
+}
+```
+
+```cpp
+void OSD::sched_scrub() {
+    dout(20) << __func__ << " sched_scrub starts" << dendl;
+
+    // if not permitted, fail fast
+    if (!service.can_inc_scrubs()) {
+        dout(20) << __func__ << ": OSD cannot inc scrubs" << dendl;
+        return;
+    }
+    bool allow_requested_repair_only = false;
+    if (service.is_recovery_active() && !cct->_conf->osd_scrub_during_recovery) {
+        if (!cct->_conf->osd_repair_during_recovery) {
+            dout(15) << __func__ << ": not scheduling scrubs due to active recovery" << dendl;
+            return;
+        }
+        dout(10) << __func__
+                 << " will only schedule explicitly requested repair due to active recovery"
+                 << dendl;
+        allow_requested_repair_only = true;
+    }
+
+    utime_t now = ceph_clock_now();
+    bool time_permit = scrub_time_permit(now);
+    bool load_is_low = scrub_load_below_threshold();
+    dout(20) << "sched_scrub load_is_low=" << (int)load_is_low << dendl;
+
+    OSDService::ScrubJob scrub_job;
+    if (service.first_scrub_stamp(&scrub_job)) {
+        do {
+            dout(30) << "sched_scrub examine " << scrub_job.pgid << " at " << scrub_job.sched_time
+                     << dendl;
+
+            if (scrub_job.sched_time > now) {
+                // save ourselves some effort
+                dout(20) << "sched_scrub " << scrub_job.pgid << " scheduled at "
+                         << scrub_job.sched_time << " > " << now << dendl;
+                break;
+            }
+
+            if ((scrub_job.deadline.is_zero() || scrub_job.deadline >= now) &&
+                !(time_permit && load_is_low)) {
+                dout(15) << __func__ << " not scheduling scrub for " << scrub_job.pgid << " due to "
+                         << (!time_permit ? "time not permit" : "high load") << dendl;
+                continue;
+            }
+
+            PGRef pg = _lookup_lock_pg(scrub_job.pgid);
+            if (!pg) {
+                dout(20) << __func__ << " pg  " << scrub_job.pgid << " not found" << dendl;
+                continue;
+            }
+
+            // This has already started, so go on to the next scrub job
+            if (pg->is_scrub_active()) {
+                pg->unlock();
+                dout(20) << __func__ << ": already in progress pgid " << scrub_job.pgid << dendl;
+                continue;
+            }
+            // Skip other kinds of scrubbing if only explicitly requested repairing is allowed
+            if (allow_requested_repair_only && !pg->m_planned_scrub.must_repair) {
+                pg->unlock();
+                dout(10) << __func__ << " skip " << scrub_job.pgid
+                         << " because repairing is not explicitly requested on it" << dendl;
+                continue;
+            }
+
+            // If it is reserving, let it resolve before going to the next scrub job
+            if (pg->m_scrubber->is_reserving()) {
+                pg->unlock();
+                dout(10) << __func__ << ": reserve in progress pgid " << scrub_job.pgid << dendl;
+                break;
+            }
+            dout(15) << "sched_scrub scrubbing " << scrub_job.pgid << " at " << scrub_job.sched_time
+                     << (pg->get_must_scrub() ? ", explicitly requested"
+                                              : (load_is_low ? ", load_is_low" : " deadline < now"))
+                     << dendl;
+            if (pg->sched_scrub()) {
+                pg->unlock();
+                dout(10) << __func__ << " scheduled a scrub!"
+                         << " (~" << scrub_job.pgid << "~)" << dendl;
+                break;
+            }
+            pg->unlock();
+        } while (service.next_scrub_stamp(scrub_job, &scrub_job));
+    }
+    dout(20) << "sched_scrub done" << dendl;
+}
+```
+
+`OSD::sched_scrub`流程：
+* 先进行一些检查尝试提高`scrub`计数（`!service.can_inc_scrubs()`）。
+* 如果在recovery中，检查`osd_scrub_during_recovery`配置：
+  * 如果设置了，则继续：
+    * 查看`osd_repair_during_recovery`：
+      * 如果为`false`，返回，recovery中不允许启动`scrub`。
+      * 如果为`true`，继续，设置`allow_requested_repair_only`为`true`。
+* 查看当前时间段是否允许scrub（调用`scrub_time_permit`）。
+* 查看当前CPU负载是否允许scrub（调用`scrub_load_below_threshold`）。
+* 初始化`scrub_job`（调用`first_scrub_stamp`从`sched_scrub_pg`队列中提取一个PG进行scrub）。
+* 查看当前是否可以启动scrub（`(scrub_job.deadline.is_zero() || scrub_job.deadline >= now) &&!(time_permit && load_is_low)`，满足负载和时间条件或者超出deadline）：
+  * 时间或负载是否满足（`time_permit && load_is_low`）。
+  * `scrub_job.deadline.is_zero()`非`0`且`scrub_job.deadline < now`。
+* 查看是否已经有一个scrub job正在scrub PG，如果是，则寻找下一个PG重启流程。
+* 查看是否需要修复（`pg->m_planned_scrub.must_repair`）：
+  * 如果不需要修复且`allow_requested_repair_only`为`true`，则寻找下一个PG重启流程。
+* 查看限流（`pg->m_scrubber->is_reserving()`）。
+* 调用`pg->sched_scrub()`启动scrub。
+
+```cpp
+bool first_scrub_stamp(ScrubJob *out) {
+    std::lock_guard l(sched_scrub_lock);
+    if (sched_scrub_pg.empty())
+        return false;
+    std::set<ScrubJob>::iterator iter = sched_scrub_pg.begin();
+    *out = *iter;
+    return true;
+}
+
+bool OSD::scrub_time_permit(utime_t now) {
+    struct tm bdt;
+    time_t tt = now.sec();
+    localtime_r(&tt, &bdt);
+
+    bool day_permit = false;
+    if (cct->_conf->osd_scrub_begin_week_day < cct->_conf->osd_scrub_end_week_day) {
+        if (bdt.tm_wday >= cct->_conf->osd_scrub_begin_week_day &&
+            bdt.tm_wday < cct->_conf->osd_scrub_end_week_day) {
+            day_permit = true;
+        }
+    } else {
+        if (bdt.tm_wday >= cct->_conf->osd_scrub_begin_week_day ||
+            bdt.tm_wday < cct->_conf->osd_scrub_end_week_day) {
+            day_permit = true;
+        }
+    }
+
+    if (!day_permit) {
+        dout(20) << __func__ << " should run between week day "
+                 << cct->_conf->osd_scrub_begin_week_day << " - "
+                 << cct->_conf->osd_scrub_end_week_day << " now " << bdt.tm_wday << " = no"
+                 << dendl;
+        return false;
+    }
+
+    bool time_permit = false;
+    if (cct->_conf->osd_scrub_begin_hour < cct->_conf->osd_scrub_end_hour) {
+        if (bdt.tm_hour >= cct->_conf->osd_scrub_begin_hour &&
+            bdt.tm_hour < cct->_conf->osd_scrub_end_hour) {
+            time_permit = true;
+        }
+    } else {
+        if (bdt.tm_hour >= cct->_conf->osd_scrub_begin_hour ||
+            bdt.tm_hour < cct->_conf->osd_scrub_end_hour) {
+            time_permit = true;
+        }
+    }
+    if (time_permit) {
+        dout(20) << __func__ << " should run between " << cct->_conf->osd_scrub_begin_hour << " - "
+                 << cct->_conf->osd_scrub_end_hour << " now " << bdt.tm_hour << " = yes" << dendl;
+    } else {
+        dout(20) << __func__ << " should run between " << cct->_conf->osd_scrub_begin_hour << " - "
+                 << cct->_conf->osd_scrub_end_hour << " now " << bdt.tm_hour << " = no" << dendl;
+    }
+    return time_permit;
+}
+
+bool OSD::scrub_load_below_threshold() {
+    double loadavgs[3];
+    if (getloadavg(loadavgs, 3) != 3) {
+        dout(10) << __func__ << " couldn't read loadavgs\n" << dendl;
+        return false;
+    }
+
+    // allow scrub if below configured threshold
+    long cpus = sysconf(_SC_NPROCESSORS_ONLN);
+    double loadavg_per_cpu = cpus > 0 ? loadavgs[0] / cpus : loadavgs[0];
+    if (loadavg_per_cpu < cct->_conf->osd_scrub_load_threshold) {
+        dout(20) << __func__ << " loadavg per cpu " << loadavg_per_cpu << " < max "
+                 << cct->_conf->osd_scrub_load_threshold << " = yes" << dendl;
+        return true;
+    }
+
+    // allow scrub if below daily avg and currently decreasing
+    if (loadavgs[0] < daily_loadavg && loadavgs[0] < loadavgs[2]) {
+        dout(20) << __func__ << " loadavg " << loadavgs[0] << " < daily_loadavg " << daily_loadavg
+                 << " and < 15m avg " << loadavgs[2] << " = yes" << dendl;
+        return true;
+    }
+
+    dout(20) << __func__ << " loadavg " << loadavgs[0] << " >= max "
+             << cct->_conf->osd_scrub_load_threshold << " and ( >= daily_loadavg " << daily_loadavg
+             << " or >= 15m avg " << loadavgs[2] << ") = no" << dendl;
+    return false;
+}
+```
+
+`PG::sched_scrub`进行scrub调度。
+
+```cpp
+/*
+ *  implementation note:
+ *  PG::sched_scrub() is called only once per a specific scrub session.
+ *  That call commits us to the whatever choices are made (deep/shallow, etc').
+ *  Unless failing to start scrubbing, the 'planned scrub' flag-set is 'frozen' into
+ *  PgScrubber's m_flags, then cleared.
+ */
+bool PG::sched_scrub() {
+    dout(15) << __func__ << " pg(" << info.pgid << (is_active() ? ") <active>" : ") <not-active>")
+             << (is_clean() ? " <clean>" : " <not-clean>") << dendl;
+    ceph_assert(ceph_mutex_is_locked(_lock));
+
+    if (m_scrubber && m_scrubber->is_scrub_active()) {
+        return false;
+    }
+
+    if (!is_primary() || !is_active() || !is_clean()) {
+        return false;
+    }
+
+    if (scrub_queued) {
+        // only applicable to the very first time a scrub event is queued
+        // (until handled and posted to the scrub FSM)
+        dout(10) << __func__ << ": already queued" << dendl;
+        return false;
+    }
+
+    // analyse the combination of the requested scrub flags, the osd/pool configuration
+    // and the PG status to determine whether we should scrub now, and what type of scrub
+    // should that be.
+    auto updated_flags = verify_scrub_mode();
+    if (!updated_flags) {
+        // the stars do not align for starting a scrub for this PG at this time
+        // (due to configuration or priority issues)
+        // The reason was already reported by the callee.
+        dout(10) << __func__ << ": failed to initiate a scrub" << dendl;
+        return false;
+    }
+
+    // try to reserve the local OSD resources. If failing: no harm. We will
+    // be retried by the OSD later on.
+    if (!m_scrubber->reserve_local()) {
+        dout(10) << __func__ << ": failed to reserve locally" << dendl;
+        return false;
+    }
+
+    // can commit to the updated flags now, as nothing will stop the scrub
+    m_planned_scrub = *updated_flags;
+
+    // An interrupted recovery repair could leave this set.
+    state_clear(PG_STATE_REPAIR);
+
+    // Pass control to the scrubber. It is the scrubber that handles the replicas'
+    // resources reservations.
+    m_scrubber->set_op_parameters(m_planned_scrub);
+
+    dout(10) << __func__ << ": queueing" << dendl;
+
+    scrub_queued = true;
+    osd->queue_for_scrub(this, Scrub::scrub_prio_t::low_priority);
+    return true;
+}
+```
+
+最后调用`queue_for_scrub`，使`PGScrub`入队。
+
+#### Summary
+
+![F24](./F24.png)
+
+主要流程说明如下：
+* 首先判断osd正在执行scrub的pg数是否大于`osd_max_scrubs`，如果大于则返回；
+* 是否达到pg的预期scrub时间，如果没达到则返回，预期的scrub时间是由上次scrub的时间、`osd_scrub_min_interval`、`osd_scrub_interval_randomize_ratio`参数决定；
+* 判断当前时间是否大于deadline，如果小于，则判断是否在`osd_scrub_begin_hour`和`osd_scrub_end_hour`，如果处于则判断集群负载是否在`osd_scrub_load_thredhold`之下，如果不满足则等待时间再重试。如果当前时间大于deadline，则不会判断时间和负载，强制执行scrub任务，到这一步仍然是`osd_scrub_min_interval`和`osd_scrub_max_interval`起作用；
+* 一个scrub任务最后会经过判断，从而决定这个scrub任务到底是scrub还是deepscrub。
+* 在主osd判断deep scrub的时间有没有超过`deep_scrub_interval`，如果超过，这个任务会是deep scrub(`scrubber.time_for_deep =ceph_clock_now() >= info.history.last_deep_scrub_stamp+ deep_scrub_interval`)；
+* 如果没过期，这时`osd_deep_scrub_randomize_ratio`这个参数会起作用：
+  * `deep_coin_flip = (rand()% 100) < cct->_conf->osd_deep_scrub_randomize_ratio* 100;`
+  * `scrubber.time_for_deep= (scrubber.time_for_deep || deep_coin_flip);`
+* 首先判断osd正在执行scrub的pg数是否大于`osd_max_scrubs`，如果大于则返回；
+* 获取deep scrub和scrub的标志位，如果设置了`no_deep_scrub`或者`no_scrub`，则不执行相应任务。
+
+![F26](./F26.png)
+
+### Scrub Process
+
+```cpp
+void OSDService::queue_for_scrub(PG *pg, Scrub::scrub_prio_t with_priority) {
+    queue_scrub_event_msg<PGScrub>(pg, with_priority);
+}
+```
+
+`OSDService::queue_for_scrub`导致`PGScrub::run`调用`pg->scrub`。
+
+```cpp
+void PGScrub::run(OSD *osd, OSDShard *sdata, PGRef &pg, ThreadPool::TPHandle &handle) {
+  pg->scrub(epoch_queued, handle);
+  pg->unlock();
+}
+```
+
+```cpp
+void scrub(epoch_t queued, ThreadPool::TPHandle &handle) {
+  // a new scrub
+  scrub_queued = false;
+  forward_scrub_event(&ScrubPgIF::initiate_regular_scrub, queued, "StartScrub"sv);
+}
+
+void PG::forward_scrub_event(ScrubAPI fn, epoch_t epoch_queued, std::string_view desc) {
+    dout(20) << __func__ << ": " << desc << " queued at: " << epoch_queued << dendl;
+    if (is_active() && m_scrubber) {
+        ((*m_scrubber).*fn)(epoch_queued);
+    } else {
+        // pg might be in the process of being deleted
+        dout(5) << __func__ << " refusing to forward. "
+                << (is_clean() ? "(clean) " : "(not clean) ")
+                << (is_active() ? "(active) " : "(not active) ") << dendl;
+    }
+}
+
+void PgScrubber::initiate_regular_scrub(epoch_t epoch_queued) {
+    dout(15) << __func__ << " epoch: " << epoch_queued << dendl;
+    // we may have lost our Primary status while the message languished in the queue
+    if (check_interval(epoch_queued)) {
+        dout(10) << "scrubber event -->> StartScrub epoch: " << epoch_queued << dendl;
+        reset_epoch(epoch_queued);
+        m_fsm->process_event(StartScrub{});
+        dout(10) << "scrubber event --<< StartScrub" << dendl;
+    } else {
+        // and just in case snap trimming was blocked by the aborted scrub
+        m_pg->snap_trimmer_scrub_complete();
+    }
+}
+```
+
+投递`StartScrub`事件到`ScrubMachine`状态机。
+
+进入`ReservingReplicas`状态，预留replica资源。
+
+```cpp
+ReservingReplicas::ReservingReplicas(my_context ctx)
+  : my_base(ctx) {
+  dout(10) << "-- state -->> ReservingReplicas" << dendl;
+  DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+  scrbr->scrub_begin();
+  scrbr->reserve_replicas();
+}
+```
+
+```cpp
+void PgScrubber::scrub_begin() {
+    stringstream ss;
+    ss << m_pg->info.pgid.pgid << " " << m_mode_desc << " starts";
+    dout(2) << ss.str() << dendl;
+    m_osds->clog->debug(ss);
+}
+
+void PgScrubber::reserve_replicas() {
+    dout(10) << __func__ << dendl;
+    m_reservations.emplace(m_pg, m_pg_whoami);
+}
+```
+
+成功后调用`PgScrubber::handle_scrub_reserve_grant`。
+
+```cpp
+void PgScrubber::handle_scrub_reserve_grant(OpRequestRef op, pg_shard_t from) {
+    dout(10) << __func__ << " " << *op->get_req() << dendl;
+    op->mark_started();
+
+    if (m_reservations.has_value()) {
+        m_reservations->handle_reserve_grant(op, from);
+    } else {
+        derr << __func__ << ": received unsolicited reservation grant from osd " << from << " ("
+             << op << ")" << dendl;
+    }
+}
+```
+
+如果所有replicas都成功预留,`PGScrubResourcesOK`入队。
+
+```cpp
+
+void ReplicaReservations::send_all_done() {
+  m_osds->queue_for_scrub_granted(m_pg, scrub_prio_t::low_priority);
+}
+```
+
+经过调度处理后，状态机进入`ActiveScrubbing`状态。
+
+```cpp
+void PGScrubResourcesOK::run(OSD *osd,
+                                 OSDShard *sdata,
+                                 PGRef &pg,
+                                 ThreadPool::TPHandle &handle) {
+  pg->scrub_send_resources_granted(epoch_queued, handle);
+  pg->unlock();
+}
+
+void PG::scrub_send_resources_granted(epoch_t queued, ThreadPool::TPHandle &handle) {
+    forward_scrub_event(&ScrubPgIF::send_remotes_reserved, queued, "RemotesReserved"sv);
+}
+
+void PgScrubber::send_remotes_reserved(epoch_t epoch_queued) {
+    dout(10) << "scrubber event -->> " << __func__ << " epoch: " << epoch_queued << dendl;
+    // note: scrub is not active yet
+    if (check_interval(epoch_queued)) {
+        m_fsm->process_event(RemotesReserved{});
+    }
+    dout(10) << "scrubber event --<< " << __func__ << dendl;
+}
+
+ActiveScrubbing::ActiveScrubbing(my_context ctx)
+  : my_base(ctx) {
+  dout(10) << "-- state -->> ActiveScrubbing" << dendl;
+  DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+  scrbr->on_init();
+}
+```
+
+然后事件回调`on_init`将被触发。
+
+```cpp
+void PgScrubber::on_init() {
+    // going upwards from 'inactive'
+    ceph_assert(!is_scrub_active());
+
+    preemption_data.reset();
+    m_pg->publish_stats_to_osd();
+    m_interval_start = m_pg->get_history().same_interval_since;
+
+    dout(10) << __func__ << " start same_interval:" << m_interval_start << dendl;
+
+    //  create a new store
+    {
+        ObjectStore::Transaction t;
+        cleanup_store(&t);
+        m_store.reset(Scrub::Store::create(m_pg->osd->store, &t, m_pg->info.pgid, m_pg->coll));
+        m_pg->osd->store->queue_transaction(m_pg->ch, std::move(t), nullptr);
+    }
+
+    m_start = m_pg->info.pgid.pgid.get_hobj_start();
+    m_active = true;
+}
+
+void PgScrubber::cleanup_store(ObjectStore::Transaction *t) {
+    if (!m_store)
+        return;
+
+    struct OnComplete : Context {
+        std::unique_ptr<Scrub::Store> store;
+        explicit OnComplete(std::unique_ptr<Scrub::Store> &&store)
+            : store(std::move(store)) {
+        }
+        void finish(int) override {
+        }
+    };
+    m_store->cleanup(t);
+    t->register_on_complete(new OnComplete(std::move(m_store)));
+    ceph_assert(!m_store);
+}
+```
+
+然后进入`PendingTimer`子状态。
+
+```cpp
+/**
+*  Sleeping till timer reactivation - or just requeuing
+*/
+PendingTimer::PendingTimer(my_context ctx)
+  : my_base(ctx) {
+  dout(10) << "-- state -->> Act/PendingTimer" << dendl;
+  DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+
+  scrbr->add_delayed_scheduling();
+}
+
+/**
+ *  if we are required to sleep:
+ *	arrange a callback sometimes later.
+ *	be sure to be able to identify a stale callback.
+ *  Otherwise: perform a requeue (i.e. - rescheduling thru the OSD queue)
+ *    anyway.
+ */
+void PgScrubber::add_delayed_scheduling() {
+    m_end = m_start;   // not blocking any range now
+
+    milliseconds sleep_time{0ms};
+    if (m_needs_sleep) {
+        double scrub_sleep = 1000.0 * m_osds->osd->scrub_sleep_time(m_flags.required);
+        sleep_time = milliseconds{long(scrub_sleep)};
+    }
+    dout(15) << __func__ << " sleep: " << sleep_time.count() << "ms. needed? " << m_needs_sleep
+             << dendl;
+
+    if (sleep_time.count()) {
+        // schedule a transition for some 'sleep_time' ms in the future
+
+        m_needs_sleep = false;
+        m_sleep_started_at = ceph_clock_now();
+
+        // the following log line is used by osd-scrub-test.sh
+        dout(20) << __func__ << " scrub state is PendingTimer, sleeping" << dendl;
+
+        // the 'delayer' for crimson is different. Will be factored out.
+
+        spg_t pgid = m_pg->get_pgid();
+        auto callbk =
+            new LambdaContext([osds = m_osds, pgid, scrbr = this]([[maybe_unused]] int r) mutable {
+                PGRef pg = osds->osd->lookup_lock_pg(pgid);
+                if (!pg) {
+                    lgeneric_subdout(g_ceph_context, osd, 10)
+                        << "scrub_requeue_callback: Could not find "
+                        << "PG " << pgid << " can't complete scrub requeue after sleep" << dendl;
+                    return;
+                }
+                scrbr->m_needs_sleep = true;
+                lgeneric_dout(scrbr->get_pg_cct(), 7)
+                    << "scrub_requeue_callback: slept for "
+                    << ceph_clock_now() - scrbr->m_sleep_started_at << ", re-queuing scrub"
+                    << dendl;
+
+                scrbr->m_sleep_started_at = utime_t{};
+                osds->queue_for_scrub_resched(&(*pg), Scrub::scrub_prio_t::low_priority);
+                pg->unlock();
+            });
+
+        std::lock_guard l(m_osds->sleep_lock);
+        m_osds->sleep_timer.add_event_after(sleep_time.count() / 1000.0f, callbk);
+
+    } else {
+        // just a requeue
+        m_osds->queue_for_scrub_resched(m_pg, Scrub::scrub_prio_t::high_priority);
+    }
+}
+```
+
+调度`PGScrubResched`入队。
+
+```cpp
+void OSDService::queue_for_scrub_resched(PG *pg, Scrub::scrub_prio_t with_priority) {
+    // Resulting scrub event: 'InternalSchedScrub'
+    queue_scrub_event_msg<PGScrubResched>(pg, with_priority);
+}
+
+void PGScrubResched::run(OSD *osd, OSDShard *sdata, PGRef &pg, ThreadPool::TPHandle &handle) {
+   pg->scrub_send_scrub_resched(epoch_queued, handle);
+   pg->unlock();
+}
+
+void PG::scrub_send_scrub_resched(epoch_t queued, ThreadPool::TPHandle &handle) {
+   scrub_queued = false;
+   forward_scrub_event(&ScrubPgIF::send_scrub_resched, queued, "InternalSchedScrub"sv);
+}
+
+void PgScrubber::send_scrub_resched(epoch_t epoch_queued) {
+    dout(10) << "scrubber event -->> " << __func__ << " epoch: " << epoch_queued << dendl;
+    if (is_message_relevant(epoch_queued)) {
+        m_fsm->process_event(InternalSchedScrub{});
+    }
+    dout(10) << "scrubber event --<< " << __func__ << dendl;
+}
+```
+
+投递`InternalSchedScrub`事件，进入`NewChunk`状态。
+
+```cpp
+NewChunk::NewChunk(my_context ctx)
+   : my_base(ctx) {
+   dout(10) << "-- state -->> Act/NewChunk" << dendl;
+   DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+
+   scrbr->get_preemptor().adjust_parameters();
+
+   //  choose range to work on
+   //  select_range_n_notify() will signal either SelectedChunkFree or
+   //  ChunkIsBusy. If 'busy', we transition to Blocked, and wait for the
+   //  range to become available.
+   scrbr->select_range_n_notify();
+}
+
+void PgScrubber::select_range_n_notify() {
+    if (select_range()) {
+        // the next chunk to handle is not blocked
+        dout(20) << __func__ << ": selection OK" << dendl;
+        m_osds->queue_scrub_chunk_free(m_pg, Scrub::scrub_prio_t::low_priority);
+
+    } else {
+        // we will wait for the objects range to become available for scrubbing
+        dout(10) << __func__ << ": selected chunk is busy" << dendl;
+        m_osds->queue_scrub_chunk_busy(m_pg, Scrub::scrub_prio_t::low_priority);
+    }
+}
+```
+
+`select_range_n_notify`实际执行scrub过程：
+* 通过`select_range`查看需要执行scrub的range的对象是否可用：
+  * 如果不可用调用`queue_scrub_chunk_busy`。
+  * 可用则调用`queue_scrub_chunk_free`。
+
+`PgScrubber::select_range`决定要scrub的对象range，并返回它们是否可用。
+
+range由`osd_scrub_chunk_min`和`osd_scrub_chunk_max`控制。
+
+```cpp
+/*
+ * The selected range is set directly into 'm_start' and 'm_end'
+ * setting:
+ * - m_subset_last_update
+ * - m_max_end
+ * - end
+ * - start
+ */
+bool PgScrubber::select_range() {
+    m_primary_scrubmap = ScrubMap{};
+    m_received_maps.clear();
+
+    /* get the start and end of our scrub chunk
+     *
+     * Our scrub chunk has an important restriction we're going to need to
+     * respect. We can't let head be start or end.
+     * Using a half-open interval means that if end == head,
+     * we'd scrub/lock head and the clone right next to head in different
+     * chunks which would allow us to miss clones created between
+     * scrubbing that chunk and scrubbing the chunk including head.
+     * This isn't true for any of the other clones since clones can
+     * only be created "just to the left of" head.  There is one exception
+     * to this: promotion of clones which always happens to the left of the
+     * left-most clone, but promote_object checks the scrubber in that
+     * case, so it should be ok.  Also, it's ok to "miss" clones at the
+     * left end of the range if we are a tier because they may legitimately
+     * not exist (see _scrub).
+     */
+    int min_idx = std::max<int64_t>(
+        3, m_pg->get_cct()->_conf->osd_scrub_chunk_min / preemption_data.chunk_divisor());
+
+    int max_idx = std::max<int64_t>(
+        min_idx, m_pg->get_cct()->_conf->osd_scrub_chunk_max / preemption_data.chunk_divisor());
+
+    dout(10) << __func__ << " Min: " << min_idx << " Max: " << max_idx
+             << " Div: " << preemption_data.chunk_divisor() << dendl;
+
+    hobject_t start = m_start;
+    hobject_t candidate_end;
+    std::vector<hobject_t> objects;
+    int ret = m_pg->get_pgbackend()->objects_list_partial(
+        start, min_idx, max_idx, &objects, &candidate_end);
+    ceph_assert(ret >= 0);
+
+    if (!objects.empty()) {
+
+        hobject_t back = objects.back();
+        while (candidate_end.is_head() && candidate_end == back.get_head()) {
+            candidate_end = back;
+            objects.pop_back();
+            if (objects.empty()) {
+                ceph_assert(0 == "Somehow we got more than 2 objects which"
+                                 "have the same head but are not clones");
+            }
+            back = objects.back();
+        }
+
+        if (candidate_end.is_head()) {
+            ceph_assert(candidate_end != back.get_head());
+            candidate_end = candidate_end.get_object_boundary();
+        }
+
+    } else {
+        ceph_assert(candidate_end.is_max());
+    }
+
+    // is that range free for us? if not - we will be rescheduled later by whoever
+    // triggered us this time
+
+    if (!m_pg->_range_available_for_scrub(m_start, candidate_end)) {
+        // we'll be requeued by whatever made us unavailable for scrub
+        dout(10) << __func__ << ": scrub blocked somewhere in range "
+                 << "[" << m_start << ", " << candidate_end << ")" << dendl;
+        return false;
+    }
+
+    m_end = candidate_end;
+    if (m_end > m_max_end)
+        m_max_end = m_end;
+
+    dout(15) << __func__ << " range selected: " << m_start << " //// " << m_end << " //// "
+             << m_max_end << dendl;
+    return true;
+}
+```
+
+对象range是否可用是由`PrimaryLogPG::_range_available_for_scrub`控制的，要求每一个对象的`is_blocked()`都为`false`。
+
+如果range被blocked，将会再解除blocked只会重新调度scrub。
+
+```cpp
+bool PrimaryLogPG::_range_available_for_scrub(const hobject_t &begin, const hobject_t &end) {
+    pair<hobject_t, ObjectContextRef> next;
+    next.second = object_contexts.lookup(begin);
+    next.first = begin;
+    bool more = true;
+    while (more && next.first < end) {
+        if (next.second && next.second->is_blocked()) {
+            next.second->requeue_scrub_on_unblock = true;
+            dout(10) << __func__ << ": scrub delayed, " << next.first << " is blocked" << dendl;
+            return false;
+        }
+        more = object_contexts.get_next(next.first, &next);
+    }
+    return true;
+}
+```
+
+`PgScrubber::send_chunk_busy`和`PgScrubber::send_chunk_free`将投递不同的事件转移到不同的状态。
+
+```cpp
+void PgScrubber::send_chunk_busy(epoch_t epoch_queued) {
+    dout(10) << "scrubber event -->> " << __func__ << " epoch: " << epoch_queued << dendl;
+    if (check_interval(epoch_queued)) {
+        m_fsm->process_event(Scrub::ChunkIsBusy{});
+    }
+    dout(10) << "scrubber event --<< " << __func__ << dendl;
+}
+
+void PgScrubber::send_chunk_free(epoch_t epoch_queued) {
+    dout(10) << "scrubber event -->> " << __func__ << " epoch: " << epoch_queued << dendl;
+    if (check_interval(epoch_queued)) {
+        m_fsm->process_event(Scrub::SelectedChunkFree{});
+    }
+    dout(10) << "scrubber event --<< " << __func__ << dendl;
+}
+```
+
+投递`ChunkIsBusy`将会进入`RangeBlocked`状态，等待`Unblocked`事件。
+
+```cpp
+RangeBlocked::RangeBlocked(my_context ctx)
+    : my_base(ctx) {
+    dout(10) << "-- state -->> Act/RangeBlocked" << dendl;
+}
+```
+
+而投递`SelectedChunkFree`将调用`scrbr->set_subset_last_update`进入`WaitPushes`状态。
+
+```cpp
+sc::result NewChunk::react(const SelectedChunkFree &) {
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+    dout(10) << "NewChunk::react(const SelectedChunkFree&)" << dendl;
+
+    scrbr->set_subset_last_update(scrbr->search_log_for_updates());
+    return transit<WaitPushes>();
+}
+
+void PgScrubber::set_subset_last_update(eversion_t e) {
+    m_subset_last_update = e;
+    dout(15) << __func__ << " last-update: " << e << dendl;
+}
+```
+
+又会从`WaitPushes`切换到`WaitLastUpdate`状态。
+
+```cpp
+WaitPushes::WaitPushes(my_context ctx)
+    : my_base(ctx) {
+    dout(10) << " -- state -->> Act/WaitPushes" << dendl;
+    post_event(ActivePushesUpd{});
+}
+
+/*
+* Triggered externally, by the entity that had an update re pushes
+*/
+sc::result WaitPushes::react(const ActivePushesUpd &) {
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+    dout(10) << "WaitPushes::react(const ActivePushesUpd&) pending_active_pushes: "
+             << scrbr->pending_active_pushes() << dendl;
+
+    if (!scrbr->pending_active_pushes()) {
+        // done waiting
+        return transit<WaitLastUpdate>();
+    }
+
+    return discard_event();
+}
+```
+
+进入`WaitLastUpdate`状态，投递`pdatesApplied`事件。
+
+```cpp
+WaitLastUpdate::WaitLastUpdate(my_context ctx)
+    : my_base(ctx) {
+    dout(10) << " -- state -->> Act/WaitLastUpdate" << dendl;
+    post_event(UpdatesApplied{});
+}
+
+/**
+ *  Note:
+ *  Updates are locally readable immediately. Thus, on the replicas we do need
+ *  to wait for the update notifications before scrubbing. For the Primary it's
+ *  a bit different: on EC (and only there) rmw operations have an additional
+ *  read roundtrip. That means that on the Primary we need to wait for
+ *  last_update_applied (the replica side, even on EC, is still safe
+ *  since the actual transaction will already be readable by commit time.
+ */
+void WaitLastUpdate::on_new_updates(const UpdatesApplied &) {
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+    dout(10) << "WaitLastUpdate::on_new_updates(const UpdatesApplied&)" << dendl;
+
+    if (scrbr->has_pg_marked_new_updates()) {
+        post_event(InternalAllUpdates{});
+    } else {
+        // will be requeued by op_applied
+        dout(10) << "wait for EC read/modify/writes to queue" << dendl;
+    }
+}
+
+/*
+ *  request maps from the replicas in the acting set
+ */
+sc::result WaitLastUpdate::react(const InternalAllUpdates &) {
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+    dout(10) << "WaitLastUpdate::react(const InternalAllUpdates&)" << dendl;
+
+    scrbr->get_replicas_maps(scrbr->get_preemptor().is_preemptable());
+    return transit<BuildMap>();
+}
+```
+
+调用`get_replicas_maps`获取副本的`maps`。
+
+```cpp
+void PgScrubber::get_replicas_maps(bool replica_can_preempt) {
+    dout(10) << __func__ << " started in epoch/interval: " << m_epoch_start << "/"
+             << m_interval_start
+             << " pg same_interval_since: " << m_pg->info.history.same_interval_since << dendl;
+
+    m_primary_scrubmap_pos.reset();
+
+    // ask replicas to scan and send maps
+    for (const auto &i : m_pg->get_actingset()) {
+
+        if (i == m_pg_whoami)
+            continue;
+
+        m_maps_status.mark_replica_map_request(i);
+        _request_scrub_map(i, m_subset_last_update, m_start, m_end, m_is_deep, replica_can_preempt);
+    }
+
+    dout(10) << __func__ << " awaiting" << m_maps_status << dendl;
+}
+```
+
+主要流程：
+* 遍历`m_pg->get_actingset()`：
+  * 使用`_request_scrub_map`向replicas发送scrub map的获取请求。
+
+```cpp
+void PgScrubber::_request_scrub_map(pg_shard_t replica,
+                                    eversion_t version,
+                                    hobject_t start,
+                                    hobject_t end,
+                                    bool deep,
+                                    bool allow_preemption) {
+    ceph_assert(replica != m_pg_whoami);
+    dout(10) << __func__ << " scrubmap from osd." << replica << (deep ? " deep" : " shallow")
+             << dendl;
+
+    auto repscrubop = new MOSDRepScrub(spg_t(m_pg->info.pgid.pgid, replica.shard),
+                                       version,
+                                       get_osdmap_epoch(),
+                                       m_pg->get_last_peering_reset(),
+                                       start,
+                                       end,
+                                       deep,
+                                       allow_preemption,
+                                       m_flags.priority,
+                                       m_pg->ops_blocked_by_scrub());
+
+    // default priority. We want the replica-scrub processed prior to any recovery
+    // or client io messages (we are holding a lock!)
+    m_osds->send_message_osd_cluster(replica.osd, repscrubop, get_osdmap_epoch());
+}
+```
+
+接着进入`BuildMap`状态。
+
+```cpp
+BuildMap::BuildMap(my_context ctx)
+    : my_base(ctx) {
+    dout(10) << " -- state -->> Act/BuildMap" << dendl;
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+
+    // no need to check for an epoch change, as all possible flows that brought us here have
+    // a check_interval() verification of their final event.
+
+    if (scrbr->get_preemptor().was_preempted()) {
+
+        // we were preempted, either directly or by a replica
+        dout(10) << __func__ << " preempted!!!" << dendl;
+        scrbr->mark_local_map_ready();
+        post_event(IntBmPreempted{});
+
+    } else {
+
+        auto ret = scrbr->build_primary_map_chunk();
+
+        if (ret == -EINPROGRESS) {
+            // must wait for the backend to finish. No specific event provided.
+            // build_primary_map_chunk() has already requeued us.
+            dout(20) << "waiting for the backend..." << dendl;
+
+        } else if (ret < 0) {
+
+            dout(10) << "BuildMap::BuildMap() Error! Aborting. Ret: " << ret << dendl;
+            post_event(InternalError{});
+
+        } else {
+
+            // the local map was created
+            post_event(IntLocalMapDone{});
+        }
+    }
+}
+```
+
+```cpp
+int PgScrubber::build_primary_map_chunk() {
+    epoch_t map_building_since = m_pg->get_osdmap_epoch();
+    dout(20) << __func__ << ": initiated at epoch " << map_building_since << dendl;
+
+    auto ret = build_scrub_map_chunk(
+        m_primary_scrubmap, m_primary_scrubmap_pos, m_start, m_end, m_is_deep);
+
+    if (ret == -EINPROGRESS) {
+        // reschedule another round of asking the backend to collect the scrub data
+        m_osds->queue_for_scrub_resched(m_pg, Scrub::scrub_prio_t::low_priority);
+    }
+    return ret;
+}
+```
+
+```cpp
+int PgScrubber::build_scrub_map_chunk(
+    ScrubMap &map, ScrubMapBuilder &pos, hobject_t start, hobject_t end, bool deep) {
+    dout(10) << __func__ << " [" << start << "," << end << ") "
+             << " pos " << pos << " Deep: " << deep << dendl;
+
+    // start
+    while (pos.empty()) {
+
+        pos.deep = deep;
+        map.valid_through = m_pg->info.last_update;
+
+        // objects
+        vector<ghobject_t> rollback_obs;
+        pos.ret = m_pg->get_pgbackend()->objects_list_range(start, end, &pos.ls, &rollback_obs);
+        dout(10) << __func__ << " while pos empty " << pos.ret << dendl;
+        if (pos.ret < 0) {
+            dout(5) << "objects_list_range error: " << pos.ret << dendl;
+            return pos.ret;
+        }
+        dout(10) << __func__ << " pos.ls.empty()? " << (pos.ls.empty() ? "+" : "-") << dendl;
+        if (pos.ls.empty()) {
+            break;
+        }
+        m_pg->_scan_rollback_obs(rollback_obs);
+        pos.pos = 0;
+        return -EINPROGRESS;
+    }
+
+    // scan objects
+    while (!pos.done()) {
+
+        int r = m_pg->get_pgbackend()->be_scan_list(map, pos);
+        if (r == -EINPROGRESS) {
+            dout(20) << __func__ << " in progress" << dendl;
+            return r;
+        }
+    }
+
+    // finish
+    dout(20) << __func__ << " finishing" << dendl;
+    ceph_assert(pos.done());
+    m_pg->_repair_oinfo_oid(map);
+
+    dout(20) << __func__ << " done, got " << map.objects.size() << " items" << dendl;
+    return 0;
+}
+```
+
+将对range内的每个对象调用`PGBackend::be_scan_list`。
+
+```cpp
+int PGBackend::be_scan_list(ScrubMap &map, ScrubMapBuilder &pos) {
+    dout(10) << __func__ << " " << pos << dendl;
+    ceph_assert(!pos.done());
+    ceph_assert(pos.pos < pos.ls.size());
+    hobject_t &poid = pos.ls[pos.pos];
+
+    struct stat st;
+    int r = store->stat(
+        ch, ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard), &st, true);
+    if (r == 0) {
+        ScrubMap::object &o = map.objects[poid];
+        o.size = st.st_size;
+        ceph_assert(!o.negative);
+        store->getattrs(
+            ch, ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard), o.attrs);
+
+        if (pos.deep) {
+            r = be_deep_scrub(poid, map, pos, o);
+        }
+        dout(25) << __func__ << "  " << poid << dendl;
+    } else if (r == -ENOENT) {
+        dout(25) << __func__ << "  " << poid << " got " << r << ", skipping" << dendl;
+    } else if (r == -EIO) {
+        dout(25) << __func__ << "  " << poid << " got " << r << ", stat_error" << dendl;
+        ScrubMap::object &o = map.objects[poid];
+        o.stat_error = true;
+    } else {
+        derr << __func__ << " got: " << cpp_strerror(r) << dendl;
+        ceph_abort();
+    }
+    if (r == -EINPROGRESS) {
+        return -EINPROGRESS;
+    }
+    pos.next_object();
+    return 0;
+}
+```
+
+主要流程是：
+* 调用`store->stat`并检查返回值。
+* 调用`store->getattrs`保存对象attrs到map里面。
+* 如果是deep scrub，还会调用`PGBackend::be_deep_scrub`：
+  * 读取数据、omap header、omap计算校验和保存到map里面。
+
+读取一次的长度以`osd_deep_scrub_stride`为单位。
+
+```cpp
+int ReplicatedBackend::be_deep_scrub(const hobject_t &poid,
+                                     ScrubMap &map,
+                                     ScrubMapBuilder &pos,
+                                     ScrubMap::object &o) {
+    dout(10) << __func__ << " " << poid << " pos " << pos << dendl;
+    int r;
+    uint32_t fadvise_flags = CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL |
+                             CEPH_OSD_OP_FLAG_FADVISE_DONTNEED |
+                             CEPH_OSD_OP_FLAG_BYPASS_CLEAN_CACHE;
+
+    utime_t sleeptime;
+    sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
+    if (sleeptime != utime_t()) {
+        lgeneric_derr(cct) << __func__ << " sleeping for " << sleeptime << dendl;
+        sleeptime.sleep();
+    }
+
+    ceph_assert(poid == pos.ls[pos.pos]);
+    if (!pos.data_done()) {
+        if (pos.data_pos == 0) {
+            pos.data_hash = bufferhash(-1);
+        }
+
+        bufferlist bl;
+        r = store->read(ch,
+                        ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+                        pos.data_pos,
+                        cct->_conf->osd_deep_scrub_stride,
+                        bl,
+                        fadvise_flags);
+        if (r < 0) {
+            dout(20) << __func__ << "  " << poid << " got " << r << " on read, read_error" << dendl;
+            o.read_error = true;
+            return 0;
+        }
+        if (r > 0) {
+            pos.data_hash << bl;
+        }
+        pos.data_pos += r;
+        if (r == cct->_conf->osd_deep_scrub_stride) {
+            dout(20) << __func__ << "  " << poid << " more data, digest so far 0x" << std::hex
+                     << pos.data_hash.digest() << std::dec << dendl;
+            return -EINPROGRESS;
+        }
+        // done with bytes
+        pos.data_pos = -1;
+        o.digest = pos.data_hash.digest();
+        o.digest_present = true;
+        dout(20) << __func__ << "  " << poid << " done with data, digest 0x" << std::hex << o.digest
+                 << std::dec << dendl;
+    }
+
+    // omap header
+    if (pos.omap_pos.empty()) {
+        pos.omap_hash = bufferhash(-1);
+
+        bufferlist hdrbl;
+        r = store->omap_get_header(
+            ch,
+            ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+            &hdrbl,
+            true);
+        if (r == -EIO) {
+            dout(20) << __func__ << "  " << poid << " got " << r
+                     << " on omap header read, read_error" << dendl;
+            o.read_error = true;
+            return 0;
+        }
+        if (r == 0 && hdrbl.length()) {
+            bool encoded = false;
+            dout(25) << "CRC header " << cleanbin(hdrbl, encoded, true) << dendl;
+            pos.omap_hash << hdrbl;
+        }
+    }
+
+    // omap
+    ObjectMap::ObjectMapIterator iter = store->get_omap_iterator(
+        ch, ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard));
+    ceph_assert(iter);
+    if (pos.omap_pos.length()) {
+        iter->lower_bound(pos.omap_pos);
+    } else {
+        iter->seek_to_first();
+    }
+    int max = g_conf()->osd_deep_scrub_keys;
+    while (iter->status() == 0 && iter->valid()) {
+        pos.omap_bytes += iter->value().length();
+        ++pos.omap_keys;
+        --max;
+        // fixme: we can do this more efficiently.
+        bufferlist bl;
+        encode(iter->key(), bl);
+        encode(iter->value(), bl);
+        pos.omap_hash << bl;
+
+        iter->next();
+
+        if (iter->valid() && max == 0) {
+            pos.omap_pos = iter->key();
+            return -EINPROGRESS;
+        }
+        if (iter->status() < 0) {
+            dout(25) << __func__ << "  " << poid << " on omap scan, db status error" << dendl;
+            o.read_error = true;
+            return 0;
+        }
+    }
+
+    if (pos.omap_keys > cct->_conf->osd_deep_scrub_large_omap_object_key_threshold ||
+        pos.omap_bytes > cct->_conf->osd_deep_scrub_large_omap_object_value_sum_threshold) {
+        dout(25) << __func__ << " " << poid << " large omap object detected. Object has "
+                 << pos.omap_keys << " keys and size " << pos.omap_bytes << " bytes" << dendl;
+        o.large_omap_object_found = true;
+        o.large_omap_object_key_count = pos.omap_keys;
+        o.large_omap_object_value_size = pos.omap_bytes;
+        map.has_large_omap_object_errors = true;
+    }
+
+    o.omap_digest = pos.omap_hash.digest();
+    o.omap_digest_present = true;
+    dout(20) << __func__ << " done with " << poid << " omap_digest " << std::hex << o.omap_digest
+             << std::dec << dendl;
+
+    // Sum up omap usage
+    if (pos.omap_keys > 0 || pos.omap_bytes > 0) {
+        dout(25) << __func__ << " adding " << pos.omap_keys << " keys and " << pos.omap_bytes
+                 << " bytes to pg_stats sums" << dendl;
+        map.has_omap_keys = true;
+        o.object_omap_bytes = pos.omap_bytes;
+        o.object_omap_keys = pos.omap_keys;
+    }
+
+    // done!
+    return 0;
+}
+
+int ECBackend::be_deep_scrub(const hobject_t &poid,
+                             ScrubMap &map,
+                             ScrubMapBuilder &pos,
+                             ScrubMap::object &o) {
+    dout(10) << __func__ << " " << poid << " pos " << pos << dendl;
+    int r;
+
+    uint32_t fadvise_flags =
+        CEPH_OSD_OP_FLAG_FADVISE_SEQUENTIAL | CEPH_OSD_OP_FLAG_FADVISE_DONTNEED;
+
+    utime_t sleeptime;
+    sleeptime.set_from_double(cct->_conf->osd_debug_deep_scrub_sleep);
+    if (sleeptime != utime_t()) {
+        lgeneric_derr(cct) << __func__ << " sleeping for " << sleeptime << dendl;
+        sleeptime.sleep();
+    }
+
+    if (pos.data_pos == 0) {
+        pos.data_hash = bufferhash(-1);
+    }
+
+    uint64_t stride = cct->_conf->osd_deep_scrub_stride;
+    if (stride % sinfo.get_chunk_size())
+        stride += sinfo.get_chunk_size() - (stride % sinfo.get_chunk_size());
+
+    bufferlist bl;
+    r = store->read(ch,
+                    ghobject_t(poid, ghobject_t::NO_GEN, get_parent()->whoami_shard().shard),
+                    pos.data_pos,
+                    stride,
+                    bl,
+                    fadvise_flags);
+    if (r < 0) {
+        dout(20) << __func__ << "  " << poid << " got " << r << " on read, read_error" << dendl;
+        o.read_error = true;
+        return 0;
+    }
+    if (bl.length() % sinfo.get_chunk_size()) {
+        dout(20) << __func__ << "  " << poid << " got " << r << " on read, not chunk size "
+                 << sinfo.get_chunk_size() << " aligned" << dendl;
+        o.read_error = true;
+        return 0;
+    }
+    if (r > 0) {
+        pos.data_hash << bl;
+    }
+    pos.data_pos += r;
+    if (r == (int)stride) {
+        return -EINPROGRESS;
+    }
+
+    ECUtil::HashInfoRef hinfo = get_hash_info(poid, false, &o.attrs);
+    if (!hinfo) {
+        dout(0) << "_scan_list  " << poid << " could not retrieve hash info" << dendl;
+        o.read_error = true;
+        o.digest_present = false;
+        return 0;
+    } else {
+        if (!get_parent()->get_pool().allows_ecoverwrites()) {
+            if (!hinfo->has_chunk_hash()) {
+                dout(0) << "_scan_list  " << poid << " got invalid hash info" << dendl;
+                o.ec_size_mismatch = true;
+                return 0;
+            }
+            if (hinfo->get_total_chunk_size() != (unsigned)pos.data_pos) {
+                dout(0) << "_scan_list  " << poid << " got incorrect size on read 0x" << std::hex
+                        << pos << " expected 0x" << hinfo->get_total_chunk_size() << std::dec
+                        << dendl;
+                o.ec_size_mismatch = true;
+                return 0;
+            }
+
+            if (hinfo->get_chunk_hash(get_parent()->whoami_shard().shard) !=
+                pos.data_hash.digest()) {
+                dout(0) << "_scan_list  " << poid << " got incorrect hash on read 0x" << std::hex
+                        << pos.data_hash.digest() << " !=  expected 0x"
+                        << hinfo->get_chunk_hash(get_parent()->whoami_shard().shard) << std::dec
+                        << dendl;
+                o.ec_hash_mismatch = true;
+                return 0;
+            }
+
+            /* We checked above that we match our own stored hash.  We cannot
+             * send a hash of the actual object, so instead we simply send
+             * our locally stored hash of shard 0 on the assumption that if
+             * we match our chunk hash and our recollection of the hash for
+             * chunk 0 matches that of our peers, there is likely no corruption.
+             */
+            o.digest = hinfo->get_chunk_hash(0);
+            o.digest_present = true;
+        } else {
+            /* Hack! We must be using partial overwrites, and partial overwrites
+             * don't support deep-scrub yet
+             */
+            o.digest = 0;
+            o.digest_present = true;
+        }
+    }
+
+    o.omap_digest = -1;
+    o.omap_digest_present = true;
+    return 0;
+}
+```
+
+完成`PgScrubber::build_primary_map_chunk`后投递`IntLocalMapDone`进入`WaitReplicas`状态。
+
+```cpp
+sc::result BuildMap::react(const IntLocalMapDone &) {
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+    dout(10) << "BuildMap::react(const IntLocalMapDone&)" << dendl;
+
+    scrbr->mark_local_map_ready();
+    return transit<WaitReplicas>();
+}
+```
+
+```cpp
+WaitReplicas::WaitReplicas(my_context ctx)
+    : my_base(ctx) {
+    dout(10) << "-- state -->> Act/WaitReplicas" << dendl;
+    post_event(GotReplicas{});
+}
+
+/**
+ * note: now that maps_compare_n_cleanup() is "futurized"(*), and we remain in this state
+ *  for a while even after we got all our maps, we must prevent are_all_maps_available()
+ *  (actually - the code after the if()) from being called more than once.
+ * This is basically a separate state, but it's too transitory and artificial to justify
+ *  the cost of a separate state.
+
+ * (*) "futurized" - in Crimson, the call to maps_compare_n_cleanup() returns immediately
+ *  after initiating the process. The actual termination of the maps comparing etc' is
+ *  signalled via an event. As we share the code with "classic" OSD, here too
+ *  maps_compare_n_cleanup() is responsible for signalling the completion of the
+ *  processing.
+ */
+sc::result WaitReplicas::react(const GotReplicas &) {
+    DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+    dout(10) << "WaitReplicas::react(const GotReplicas&)" << dendl;
+
+    if (!all_maps_already_called && scrbr->are_all_maps_available()) {
+        dout(10) << "WaitReplicas::react(const GotReplicas&) got all" << dendl;
+
+        all_maps_already_called = true;
+
+        // were we preempted?
+        if (scrbr->get_preemptor().disable_and_test()) {   // a test&set
+
+
+            dout(10) << "WaitReplicas::react(const GotReplicas&) PREEMPTED!" << dendl;
+            return transit<PendingTimer>();
+
+        } else {
+
+            // maps_compare_n_cleanup() will arrange for MapsCompared event to be sent:
+            scrbr->maps_compare_n_cleanup();
+            return discard_event();
+        }
+    } else {
+        return discard_event();
+    }
+}
+
+void PgScrubber::maps_compare_n_cleanup() {
+    scrub_compare_maps();
+    m_start = m_end;
+    run_callbacks();
+    requeue_waiting();
+    m_osds->queue_scrub_maps_compared(m_pg, Scrub::scrub_prio_t::low_priority);
+}
+```
+
+收集所有replicas的scrub map，调用`maps_compare_n_cleanup`：
+* 调用`scrub_compare_maps`对比scrub maps。
+* 投递`MapsCompared`事件，进入`WaitDigestUpdate`状态。
+
+```cpp
+void PgScrubber::scrub_compare_maps() {
+    dout(10) << __func__ << " has maps, analyzing" << dendl;
+
+    // construct authoritative scrub map for type-specific scrubbing
+    m_cleaned_meta_map.insert(m_primary_scrubmap);
+    map<hobject_t, pair<std::optional<uint32_t>, std::optional<uint32_t>>> missing_digest;
+
+    map<pg_shard_t, ScrubMap *> maps;
+    maps[m_pg_whoami] = &m_primary_scrubmap;
+
+    for (const auto &i : m_pg->get_actingset()) {
+        if (i == m_pg_whoami)
+            continue;
+        dout(2) << __func__ << " replica " << i << " has " << m_received_maps[i].objects.size()
+                << " items" << dendl;
+        maps[i] = &m_received_maps[i];
+    }
+
+    set<hobject_t> master_set;
+
+    // Construct master set
+    for (const auto &map : maps) {
+        for (const auto &i : map.second->objects) {
+            master_set.insert(i.first);
+        }
+    }
+
+    stringstream ss;
+    m_pg->get_pgbackend()->be_omap_checks(maps, master_set, m_omap_stats, ss);
+
+    if (!ss.str().empty()) {
+        m_osds->clog->warn(ss);
+    }
+
+    if (m_pg->recovery_state.get_actingset().size() > 1) {
+
+        dout(10) << __func__ << "  comparing replica scrub maps" << dendl;
+
+        // Map from object with errors to good peer
+        map<hobject_t, list<pg_shard_t>> authoritative;
+
+        dout(2) << __func__ << ": primary (" << m_pg->get_primary() << ") has "
+                << m_primary_scrubmap.objects.size() << " items" << dendl;
+
+        ss.str("");
+        ss.clear();
+
+        m_pg->get_pgbackend()->be_compare_scrubmaps(maps,
+                                                    master_set,
+                                                    m_is_repair,
+                                                    m_missing,
+                                                    m_inconsistent,
+                                                    authoritative,
+                                                    missing_digest,
+                                                    m_shallow_errors,
+                                                    m_deep_errors,
+                                                    m_store.get(),
+                                                    m_pg->info.pgid,
+                                                    m_pg->recovery_state.get_acting(),
+                                                    ss);
+
+        if (!ss.str().empty()) {
+            m_osds->clog->error(ss);
+        }
+
+        for (auto &i : authoritative) {
+            list<pair<ScrubMap::object, pg_shard_t>> good_peers;
+            for (list<pg_shard_t>::const_iterator j = i.second.begin(); j != i.second.end(); ++j) {
+                good_peers.emplace_back(maps[*j]->objects[i.first], *j);
+            }
+            m_authoritative.emplace(i.first, good_peers);
+        }
+
+        for (auto i = authoritative.begin(); i != authoritative.end(); ++i) {
+            m_cleaned_meta_map.objects.erase(i->first);
+            m_cleaned_meta_map.objects.insert(*(maps[i->second.back()]->objects.find(i->first)));
+        }
+    }
+
+    auto for_meta_scrub = clean_meta_map();
+
+    // ok, do the pg-type specific scrubbing
+
+    // (Validates consistency of the object info and snap sets)
+    scrub_snapshot_metadata(for_meta_scrub, missing_digest);
+
+    // Called here on the primary can use an authoritative map if it isn't the primary
+    _scan_snaps(for_meta_scrub);
+
+    if (!m_store->empty()) {
+
+        if (m_is_repair) {
+            dout(10) << __func__ << ": discarding scrub results" << dendl;
+            m_store->flush(nullptr);
+        } else {
+            dout(10) << __func__ << ": updating scrub object" << dendl;
+            ObjectStore::Transaction t;
+            m_store->flush(&t);
+            m_pg->osd->store->queue_transaction(m_pg->ch, std::move(t), nullptr);
+        }
+    }
+}
+```
+
+对比scrub maps分为两个部分：
+* 首先使用`be_omap_checks`，检查`omap`（寻找large omap objects）。
+* 接着使用`be_compare_scrubmaps`，对比scrub maps。
+
+```cpp
+void PGBackend::be_omap_checks(const map<pg_shard_t, ScrubMap *> &maps,
+                               const set<hobject_t> &master_set,
+                               omap_stat_t &omap_stats,
+                               ostream &warnstream) const {
+    bool needs_omap_check = false;
+    for (const auto &map : maps) {
+        if (map.second->has_large_omap_object_errors || map.second->has_omap_keys) {
+            needs_omap_check = true;
+            break;
+        }
+    }
+
+    if (!needs_omap_check) {
+        return;   // Nothing to do
+    }
+
+    // Iterate through objects and update omap stats
+    for (const auto &k : master_set) {
+        for (const auto &map : maps) {
+            if (map.first != get_parent()->primary_shard()) {
+                // Only set omap stats for the primary
+                continue;
+            }
+            auto it = map.second->objects.find(k);
+            if (it == map.second->objects.end())
+                continue;
+            ScrubMap::object &obj = it->second;
+            omap_stats.omap_bytes += obj.object_omap_bytes;
+            omap_stats.omap_keys += obj.object_omap_keys;
+            if (obj.large_omap_object_found) {
+                pg_t pg;
+                auto osdmap = get_osdmap();
+                osdmap->map_to_pg(k.pool, k.oid.name, k.get_key(), k.nspace, &pg);
+                pg_t mpg = osdmap->raw_pg_to_pg(pg);
+                omap_stats.large_omap_objects++;
+                warnstream << "Large omap object found. Object: " << k << " PG: " << pg << " ("
+                           << mpg << ")"
+                           << " Key count: " << obj.large_omap_object_key_count
+                           << " Size (bytes): " << obj.large_omap_object_value_size << '\n';
+                break;
+            }
+        }
+    }
+}
+
+void PGBackend::be_compare_scrubmaps(
+    const map<pg_shard_t, ScrubMap *> &maps,
+    const set<hobject_t> &master_set,
+    bool repair,
+    map<hobject_t, set<pg_shard_t>> &missing,
+    map<hobject_t, set<pg_shard_t>> &inconsistent,
+    map<hobject_t, list<pg_shard_t>> &authoritative,
+    map<hobject_t, pair<std::optional<uint32_t>, std::optional<uint32_t>>> &missing_digest,
+    int &shallow_errors,
+    int &deep_errors,
+    Scrub::Store *store,
+    const spg_t &pgid,
+    const vector<int> &acting,
+    ostream &errorstream) {
+    utime_t now = ceph_clock_now();
+
+    // Check maps against master set and each other
+    for (set<hobject_t>::const_iterator k = master_set.begin(); k != master_set.end(); ++k) {
+        object_info_t auth_oi;
+        map<pg_shard_t, shard_info_wrapper> shard_map;
+
+        inconsistent_obj_wrapper object_error{*k};
+
+        bool digest_match;
+        map<pg_shard_t, ScrubMap *>::const_iterator auth =
+            be_select_auth_object(*k, maps, &auth_oi, shard_map, digest_match, pgid, errorstream);
+
+        list<pg_shard_t> auth_list;
+        set<pg_shard_t> object_errors;
+        if (auth == maps.end()) {
+            object_error.set_version(0);
+            object_error.set_auth_missing(
+                *k, maps, shard_map, shallow_errors, deep_errors, get_parent()->whoami_shard());
+            if (object_error.has_deep_errors())
+                ++deep_errors;
+            else if (object_error.has_shallow_errors())
+                ++shallow_errors;
+            store->add_object_error(k->pool, object_error);
+            errorstream << pgid.pgid << " soid " << *k
+                        << " : failed to pick suitable object info\n";
+            continue;
+        }
+        object_error.set_version(auth_oi.user_version);
+        ScrubMap::object &auth_object = auth->second->objects[*k];
+        set<pg_shard_t> cur_missing;
+        set<pg_shard_t> cur_inconsistent;
+        bool fix_digest = false;
+
+        for (auto j = maps.cbegin(); j != maps.cend(); ++j) {
+            if (j == auth)
+                shard_map[auth->first].selected_oi = true;
+            if (j->second->objects.count(*k)) {
+                shard_map[j->first].set_object(j->second->objects[*k]);
+                // Compare
+                stringstream ss;
+                bool found = be_compare_scrub_objects(auth->first,
+                                                      auth_object,
+                                                      auth_oi,
+                                                      j->second->objects[*k],
+                                                      shard_map[j->first],
+                                                      object_error,
+                                                      ss,
+                                                      k->has_snapset());
+
+                dout(20) << __func__ << (repair ? " repair " : " ")
+                         << (parent->get_pool().is_replicated() ? "replicated " : "")
+                         << (j == auth ? "auth" : "") << "shards " << shard_map.size()
+                         << (digest_match ? " digest_match " : " ")
+                         << (shard_map[j->first].only_data_digest_mismatch_info()
+                                 ? "'info mismatch info'"
+                                 : "")
+                         << dendl;
+                // If all replicas match, but they don't match object_info we can
+                // repair it by using missing_digest mechanism
+                if (repair && parent->get_pool().is_replicated() && j == auth &&
+                    shard_map.size() > 1 && digest_match &&
+                    shard_map[j->first].only_data_digest_mismatch_info() &&
+                    auth_object.digest_present) {
+                    // Set in missing_digests
+                    fix_digest = true;
+                    // Clear the error
+                    shard_map[j->first].clear_data_digest_mismatch_info();
+                    errorstream << pgid << " soid " << *k << " : repairing object info data_digest"
+                                << "\n";
+                }
+                // Some errors might have already been set in be_select_auth_object()
+                if (shard_map[j->first].errors != 0) {
+                    cur_inconsistent.insert(j->first);
+                    if (shard_map[j->first].has_deep_errors())
+                        ++deep_errors;
+                    else
+                        ++shallow_errors;
+                    // Only true if be_compare_scrub_objects() found errors and put something
+                    // in ss.
+                    if (found)
+                        errorstream << pgid << " shard " << j->first << " soid " << *k << " : "
+                                    << ss.str() << "\n";
+                } else if (found) {
+                    // Track possible shard to use as authoritative, if needed
+                    // There are errors, without identifying the shard
+                    object_errors.insert(j->first);
+                    errorstream << pgid << " soid " << *k << " : " << ss.str() << "\n";
+                } else {
+                    // XXX: The auth shard might get here that we don't know
+                    // that it has the "correct" data.
+                    auth_list.push_back(j->first);
+                }
+            } else {
+                cur_missing.insert(j->first);
+                shard_map[j->first].set_missing();
+                shard_map[j->first].primary = (j->first == get_parent()->whoami_shard());
+                // Can't have any other errors if there is no information available
+                ++shallow_errors;
+                errorstream << pgid << " shard " << j->first << " " << *k << " : missing\n";
+            }
+            object_error.add_shard(j->first, shard_map[j->first]);
+        }
+
+        if (auth_list.empty()) {
+            if (object_errors.empty()) {
+                errorstream << pgid.pgid << " soid " << *k
+                            << " : failed to pick suitable auth object\n";
+                goto out;
+            }
+            // Object errors exist and nothing in auth_list
+            // Prefer the auth shard otherwise take first from list.
+            pg_shard_t shard;
+            if (object_errors.count(auth->first)) {
+                shard = auth->first;
+            } else {
+                shard = *(object_errors.begin());
+            }
+            auth_list.push_back(shard);
+            object_errors.erase(shard);
+        }
+        // At this point auth_list is populated, so we add the object errors shards
+        // as inconsistent.
+        cur_inconsistent.insert(object_errors.begin(), object_errors.end());
+        if (!cur_missing.empty()) {
+            missing[*k] = cur_missing;
+        }
+        if (!cur_inconsistent.empty()) {
+            inconsistent[*k] = cur_inconsistent;
+        }
+
+        if (fix_digest) {
+            std::optional<uint32_t> data_digest, omap_digest;
+            ceph_assert(auth_object.digest_present);
+            data_digest = auth_object.digest;
+            if (auth_object.omap_digest_present) {
+                omap_digest = auth_object.omap_digest;
+            }
+            missing_digest[*k] = make_pair(data_digest, omap_digest);
+        }
+        if (!cur_inconsistent.empty() || !cur_missing.empty()) {
+            authoritative[*k] = auth_list;
+        } else if (!fix_digest && parent->get_pool().is_replicated()) {
+            enum {
+                NO = 0,
+                MAYBE = 1,
+                FORCE = 2,
+            } update = NO;
+
+            if (auth_object.digest_present && !auth_oi.is_data_digest()) {
+                dout(20) << __func__ << " missing data digest on " << *k << dendl;
+                update = MAYBE;
+            }
+            if (auth_object.omap_digest_present && !auth_oi.is_omap_digest()) {
+                dout(20) << __func__ << " missing omap digest on " << *k << dendl;
+                update = MAYBE;
+            }
+
+            // recorded digest != actual digest?
+            if (auth_oi.is_data_digest() && auth_object.digest_present &&
+                auth_oi.data_digest != auth_object.digest) {
+                ceph_assert(shard_map[auth->first].has_data_digest_mismatch_info());
+                errorstream << pgid << " recorded data digest 0x" << std::hex << auth_oi.data_digest
+                            << " != on disk 0x" << auth_object.digest << std::dec << " on "
+                            << auth_oi.soid << "\n";
+                if (repair)
+                    update = FORCE;
+            }
+            if (auth_oi.is_omap_digest() && auth_object.omap_digest_present &&
+                auth_oi.omap_digest != auth_object.omap_digest) {
+                ceph_assert(shard_map[auth->first].has_omap_digest_mismatch_info());
+                errorstream << pgid << " recorded omap digest 0x" << std::hex << auth_oi.omap_digest
+                            << " != on disk 0x" << auth_object.omap_digest << std::dec << " on "
+                            << auth_oi.soid << "\n";
+                if (repair)
+                    update = FORCE;
+            }
+
+            if (update != NO) {
+                utime_t age = now - auth_oi.local_mtime;
+                if (update == FORCE || age > cct->_conf->osd_deep_scrub_update_digest_min_age) {
+                    std::optional<uint32_t> data_digest, omap_digest;
+                    if (auth_object.digest_present) {
+                        data_digest = auth_object.digest;
+                        dout(20) << __func__ << " will update data digest on " << *k << dendl;
+                    }
+                    if (auth_object.omap_digest_present) {
+                        omap_digest = auth_object.omap_digest;
+                        dout(20) << __func__ << " will update omap digest on " << *k << dendl;
+                    }
+                    missing_digest[*k] = make_pair(data_digest, omap_digest);
+                } else {
+                    dout(20) << __func__ << " missing digest but age " << age << " < "
+                             << cct->_conf->osd_deep_scrub_update_digest_min_age << " on " << *k
+                             << dendl;
+                }
+            }
+        }
+    out:
+        if (object_error.has_deep_errors())
+            ++deep_errors;
+        else if (object_error.has_shallow_errors())
+            ++shallow_errors;
+        if (object_error.errors || object_error.union_shards.errors) {
+            store->add_object_error(k->pool, object_error);
+        }
+    }
+}
+```
+
+```cpp
+bool PGBackend::be_compare_scrub_objects(pg_shard_t auth_shard,
+                                         const ScrubMap::object &auth,
+                                         const object_info_t &auth_oi,
+                                         const ScrubMap::object &candidate,
+                                         shard_info_wrapper &shard_result,
+                                         inconsistent_obj_wrapper &obj_result,
+                                         ostream &errorstream,
+                                         bool has_snapset) {
+    enum {
+        CLEAN,
+        FOUND_ERROR
+    } error = CLEAN;
+    if (auth.digest_present && candidate.digest_present) {
+        if (auth.digest != candidate.digest) {
+            if (error != CLEAN)
+                errorstream << ", ";
+            error = FOUND_ERROR;
+            errorstream << "data_digest 0x" << std::hex << candidate.digest << " != data_digest 0x"
+                        << auth.digest << std::dec << " from shard " << auth_shard;
+            obj_result.set_data_digest_mismatch();
+        }
+    }
+    if (auth.omap_digest_present && candidate.omap_digest_present) {
+        if (auth.omap_digest != candidate.omap_digest) {
+            if (error != CLEAN)
+                errorstream << ", ";
+            error = FOUND_ERROR;
+            errorstream << "omap_digest 0x" << std::hex << candidate.omap_digest
+                        << " != omap_digest 0x" << auth.omap_digest << std::dec << " from shard "
+                        << auth_shard;
+            obj_result.set_omap_digest_mismatch();
+        }
+    }
+    if (parent->get_pool().is_replicated()) {
+        if (auth_oi.is_data_digest() && candidate.digest_present) {
+            if (auth_oi.data_digest != candidate.digest) {
+                if (error != CLEAN)
+                    errorstream << ", ";
+                error = FOUND_ERROR;
+                errorstream << "data_digest 0x" << std::hex << candidate.digest
+                            << " != data_digest 0x" << auth_oi.data_digest << std::dec
+                            << " from auth oi " << auth_oi;
+                shard_result.set_data_digest_mismatch_info();
+            }
+        }
+        if (auth_oi.is_omap_digest() && candidate.omap_digest_present) {
+            if (auth_oi.omap_digest != candidate.omap_digest) {
+                if (error != CLEAN)
+                    errorstream << ", ";
+                error = FOUND_ERROR;
+                errorstream << "omap_digest 0x" << std::hex << candidate.omap_digest
+                            << " != omap_digest 0x" << auth_oi.omap_digest << std::dec
+                            << " from auth oi " << auth_oi;
+                shard_result.set_omap_digest_mismatch_info();
+            }
+        }
+    }
+    if (candidate.stat_error)
+        return error == FOUND_ERROR;
+    if (!shard_result.has_info_missing() && !shard_result.has_info_corrupted()) {
+        bufferlist can_bl, auth_bl;
+        auto can_attr = candidate.attrs.find(OI_ATTR);
+        auto auth_attr = auth.attrs.find(OI_ATTR);
+
+        ceph_assert(auth_attr != auth.attrs.end());
+        ceph_assert(can_attr != candidate.attrs.end());
+
+        can_bl.push_back(can_attr->second);
+        auth_bl.push_back(auth_attr->second);
+        if (!can_bl.contents_equal(auth_bl)) {
+            if (error != CLEAN)
+                errorstream << ", ";
+            error = FOUND_ERROR;
+            obj_result.set_object_info_inconsistency();
+            errorstream << "object info inconsistent ";
+        }
+    }
+    if (has_snapset) {
+        if (!shard_result.has_snapset_missing() && !shard_result.has_snapset_corrupted()) {
+            bufferlist can_bl, auth_bl;
+            auto can_attr = candidate.attrs.find(SS_ATTR);
+            auto auth_attr = auth.attrs.find(SS_ATTR);
+
+            ceph_assert(auth_attr != auth.attrs.end());
+            ceph_assert(can_attr != candidate.attrs.end());
+
+            can_bl.push_back(can_attr->second);
+            auth_bl.push_back(auth_attr->second);
+            if (!can_bl.contents_equal(auth_bl)) {
+                if (error != CLEAN)
+                    errorstream << ", ";
+                error = FOUND_ERROR;
+                obj_result.set_snapset_inconsistency();
+                errorstream << "snapset inconsistent ";
+            }
+        }
+    }
+    if (parent->get_pool().is_erasure()) {
+        if (!shard_result.has_hinfo_missing() && !shard_result.has_hinfo_corrupted()) {
+            bufferlist can_bl, auth_bl;
+            auto can_hi = candidate.attrs.find(ECUtil::get_hinfo_key());
+            auto auth_hi = auth.attrs.find(ECUtil::get_hinfo_key());
+
+            ceph_assert(auth_hi != auth.attrs.end());
+            ceph_assert(can_hi != candidate.attrs.end());
+
+            can_bl.push_back(can_hi->second);
+            auth_bl.push_back(auth_hi->second);
+            if (!can_bl.contents_equal(auth_bl)) {
+                if (error != CLEAN)
+                    errorstream << ", ";
+                error = FOUND_ERROR;
+                obj_result.set_hinfo_inconsistency();
+                errorstream << "hinfo inconsistent ";
+            }
+        }
+    }
+    uint64_t oi_size = be_get_ondisk_size(auth_oi.size);
+    if (oi_size != candidate.size) {
+        if (error != CLEAN)
+            errorstream << ", ";
+        error = FOUND_ERROR;
+        errorstream << "size " << candidate.size << " != size " << oi_size << " from auth oi "
+                    << auth_oi;
+        shard_result.set_size_mismatch_info();
+    }
+    if (auth.size != candidate.size) {
+        if (error != CLEAN)
+            errorstream << ", ";
+        error = FOUND_ERROR;
+        errorstream << "size " << candidate.size << " != size " << auth.size << " from shard "
+                    << auth_shard;
+        obj_result.set_size_mismatch();
+    }
+    // If the replica is too large and we didn't already count it for this object
+    //
+    if (candidate.size > cct->_conf->osd_max_object_size && !obj_result.has_size_too_large()) {
+        if (error != CLEAN)
+            errorstream << ", ";
+        error = FOUND_ERROR;
+        errorstream << "size " << candidate.size << " > " << cct->_conf->osd_max_object_size
+                    << " is too large";
+        obj_result.set_size_too_large();
+    }
+    for (map<string, bufferptr>::const_iterator i = auth.attrs.begin(); i != auth.attrs.end();
+         ++i) {
+        // We check system keys seperately
+        if (i->first == OI_ATTR || i->first[0] != '_')
+            continue;
+        if (!candidate.attrs.count(i->first)) {
+            if (error != CLEAN)
+                errorstream << ", ";
+            error = FOUND_ERROR;
+            errorstream << "attr name mismatch '" << i->first << "'";
+            obj_result.set_attr_name_mismatch();
+        } else if (candidate.attrs.find(i->first)->second.cmp(i->second)) {
+            if (error != CLEAN)
+                errorstream << ", ";
+            error = FOUND_ERROR;
+            errorstream << "attr value mismatch '" << i->first << "'";
+            obj_result.set_attr_value_mismatch();
+        }
+    }
+    for (map<string, bufferptr>::const_iterator i = candidate.attrs.begin();
+         i != candidate.attrs.end();
+         ++i) {
+        // We check system keys seperately
+        if (i->first == OI_ATTR || i->first[0] != '_')
+            continue;
+        if (!auth.attrs.count(i->first)) {
+            if (error != CLEAN)
+                errorstream << ", ";
+            error = FOUND_ERROR;
+            errorstream << "attr name mismatch '" << i->first << "'";
+            obj_result.set_attr_name_mismatch();
+        }
+    }
+    return error == FOUND_ERROR;
+}
+```
+
+进入`WaitDigestUpdate`状态。
+
+```cpp
+WaitDigestUpdate::WaitDigestUpdate(my_context ctx)
+  : my_base(ctx) {
+  dout(10) << "-- state -->> Act/WaitDigestUpdate" << dendl;
+  // perform an initial check: maybe we already
+  // have all the updates we need:
+  // (note that DigestUpdate is usually an external event)
+  post_event(DigestUpdate{});
+}
+
+sc::result WaitDigestUpdate::react(const DigestUpdate &) {
+  DECLARE_LOCALS;   // 'scrbr' & 'pg_id' aliases
+  dout(10) << "WaitDigestUpdate::react(const DigestUpdate&)" << dendl;
+
+  // on_digest_updates() will either:
+  // - do nothing - if we are still waiting for updates, or
+  // - finish the scrubbing of the current chunk, and:
+  //  - send NextChunk, or
+  //  - send ScrubFinished
+
+  scrbr->on_digest_updates();
+  return discard_event();
+}
+```
+
+```cpp
+void PgScrubber::on_digest_updates() {
+    dout(10) << __func__ << " #pending: " << num_digest_updates_pending << " pending? "
+             << num_digest_updates_pending << (m_end.is_max() ? " <last chunk> " : " <mid chunk> ")
+             << dendl;
+
+    if (num_digest_updates_pending > 0) {
+        // do nothing for now. We will be called again when new updates arrive
+        return;
+    }
+
+    // got all updates, and finished with this chunk. Any more?
+    if (m_end.is_max()) {
+
+        scrub_finish();
+        m_osds->queue_scrub_is_finished(m_pg);
+
+    } else {
+        // go get a new chunk (via "requeue")
+        preemption_data.reset();
+        m_osds->queue_scrub_next_chunk(m_pg, m_pg->is_scrub_blocking_ops());
+    }
+}
+```
+
+根据当前状况：
+* 如果目前是最后一个块调用`m_osds->queue_scrub_is_finished(m_pg)`，状态转移到`ScrubFinished`。
+* 不是最后一个块调用`m_osds->queue_scrub_next_chunk(m_pg, m_pg->is_scrub_blocking_ops())`，状态变化为`NewChunk`启动新一轮scrub。
+
+`PgScrubber::scrub_finish`结束Scrub过程，其处理过程如下：
+* 设置了相关PG的状态和统计信息。
+* 调用函数`scrub_process_inconsistent`用于修复scrubber里标记的missing和inconsistent对象，其最终调用`repair_object`函数。它只是在peer_missing中标记对象缺失。
+* 最后投递`DoRecovery`事件发送给PG的状态机，发起实际的对象修复操作。
+
+```cpp
+/*
+ * note: only called for the Primary.
+ */
+void PgScrubber::scrub_finish() {
+    dout(10) << __func__ << " before flags: " << m_flags
+             << ". repair state: " << (state_test(PG_STATE_REPAIR) ? "repair" : "no-repair")
+             << ". deep_scrub_on_error: " << m_flags.deep_scrub_on_error << dendl;
+
+    ceph_assert(m_pg->is_locked());
+
+    m_pg->m_planned_scrub = requested_scrub_t{};
+
+    // if the repair request comes from auto-repair and large number of errors,
+    // we would like to cancel auto-repair
+    if (m_is_repair && m_flags.auto_repair &&
+        m_authoritative.size() > m_pg->cct->_conf->osd_scrub_auto_repair_num_errors) {
+
+        dout(10) << __func__ << " undoing the repair" << dendl;
+        state_clear(PG_STATE_REPAIR);   // not expected to be set, anyway
+        m_is_repair = false;
+        update_op_mode_text();
+    }
+
+    bool do_auto_scrub = false;
+
+    // if a regular scrub had errors within the limit, do a deep scrub to auto repair
+    if (m_flags.deep_scrub_on_error && !m_authoritative.empty() &&
+        m_authoritative.size() <= m_pg->cct->_conf->osd_scrub_auto_repair_num_errors) {
+        ceph_assert(!m_is_deep);
+        do_auto_scrub = true;
+        dout(15) << __func__ << " Try to auto repair after scrub errors" << dendl;
+    }
+
+    m_flags.deep_scrub_on_error = false;
+
+    // type-specific finish (can tally more errors)
+    _scrub_finish();
+
+    bool has_error = scrub_process_inconsistent();
+
+    {
+        stringstream oss;
+        oss << m_pg->info.pgid.pgid << " " << m_mode_desc << " ";
+        int total_errors = m_shallow_errors + m_deep_errors;
+        if (total_errors)
+            oss << total_errors << " errors";
+        else
+            oss << "ok";
+        if (!m_is_deep && m_pg->info.stats.stats.sum.num_deep_scrub_errors)
+            oss << " ( " << m_pg->info.stats.stats.sum.num_deep_scrub_errors
+                << " remaining deep scrub error details lost)";
+        if (m_is_repair)
+            oss << ", " << m_fixed_count << " fixed";
+        if (total_errors)
+            m_osds->clog->error(oss);
+        else
+            m_osds->clog->debug(oss);
+    }
+
+    // Since we don't know which errors were fixed, we can only clear them
+    // when every one has been fixed.
+    if (m_is_repair) {
+        if (m_fixed_count == m_shallow_errors + m_deep_errors) {
+
+            ceph_assert(m_is_deep);
+            m_shallow_errors = 0;
+            m_deep_errors = 0;
+            dout(20) << __func__ << " All may be fixed" << dendl;
+
+        } else if (has_error) {
+
+            // Deep scrub in order to get corrected error counts
+            m_pg->scrub_after_recovery = true;
+            m_pg->m_planned_scrub.req_scrub = m_pg->m_planned_scrub.req_scrub || m_flags.required;
+
+            dout(20) << __func__ << " Current 'required': " << m_flags.required
+                     << " Planned 'req_scrub': " << m_pg->m_planned_scrub.req_scrub << dendl;
+
+        } else if (m_shallow_errors || m_deep_errors) {
+
+            // We have errors but nothing can be fixed, so there is no repair
+            // possible.
+            state_set(PG_STATE_FAILED_REPAIR);
+            dout(10) << __func__ << " " << (m_shallow_errors + m_deep_errors)
+                     << " error(s) present with no repair possible" << dendl;
+        }
+    }
+
+    {
+        // finish up
+        ObjectStore::Transaction t;
+        m_pg->recovery_state.update_stats(
+            [this](auto &history, auto &stats) {
+                dout(10) << "m_pg->recovery_state.update_stats()" << dendl;
+                utime_t now = ceph_clock_now();
+                history.last_scrub = m_pg->recovery_state.get_info().last_update;
+                history.last_scrub_stamp = now;
+                if (m_is_deep) {
+                    history.last_deep_scrub = m_pg->recovery_state.get_info().last_update;
+                    history.last_deep_scrub_stamp = now;
+                }
+
+                if (m_is_deep) {
+                    if ((m_shallow_errors == 0) && (m_deep_errors == 0))
+                        history.last_clean_scrub_stamp = now;
+                    stats.stats.sum.num_shallow_scrub_errors = m_shallow_errors;
+                    stats.stats.sum.num_deep_scrub_errors = m_deep_errors;
+                    stats.stats.sum.num_large_omap_objects = m_omap_stats.large_omap_objects;
+                    stats.stats.sum.num_omap_bytes = m_omap_stats.omap_bytes;
+                    stats.stats.sum.num_omap_keys = m_omap_stats.omap_keys;
+                    dout(25) << "scrub_finish shard " << m_pg_whoami
+                             << " num_omap_bytes = " << stats.stats.sum.num_omap_bytes
+                             << " num_omap_keys = " << stats.stats.sum.num_omap_keys << dendl;
+                } else {
+                    stats.stats.sum.num_shallow_scrub_errors = m_shallow_errors;
+                    // XXX: last_clean_scrub_stamp doesn't mean the pg is not inconsistent
+                    // because of deep-scrub errors
+                    if (m_shallow_errors == 0)
+                        history.last_clean_scrub_stamp = now;
+                }
+                stats.stats.sum.num_scrub_errors = stats.stats.sum.num_shallow_scrub_errors +
+                                                   stats.stats.sum.num_deep_scrub_errors;
+                if (m_flags.check_repair) {
+                    m_flags.check_repair = false;
+                    if (m_pg->info.stats.stats.sum.num_scrub_errors) {
+                        state_set(PG_STATE_FAILED_REPAIR);
+                        dout(10) << "scrub_finish " << m_pg->info.stats.stats.sum.num_scrub_errors
+                                 << " error(s) still present after re-scrub" << dendl;
+                    }
+                }
+                return true;
+            },
+            &t);
+        int tr = m_osds->store->queue_transaction(m_pg->ch, std::move(t), nullptr);
+        ceph_assert(tr == 0);
+    }
+
+    if (has_error) {
+        m_pg->queue_peering_event(PGPeeringEventRef(std::make_shared<PGPeeringEvent>(
+            get_osdmap_epoch(), get_osdmap_epoch(), PeeringState::DoRecovery())));
+    } else {
+        m_is_repair = false;
+        state_clear(PG_STATE_REPAIR);
+        update_op_mode_text();
+    }
+
+    cleanup_on_finish();
+    if (do_auto_scrub) {
+        request_rescrubbing(m_pg->m_planned_scrub);
+    }
+
+    if (m_pg->is_active() && m_pg->is_primary()) {
+        m_pg->recovery_state.share_pg_info();
+    }
+
+    // we may have blocked the snap trimmer
+    m_pg->snap_trimmer_scrub_complete();
+}
+```
