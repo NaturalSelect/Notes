@@ -1,4 +1,4 @@
-# Linux VFS
+# Linux Storage
 
 ![F1](./F1.png)
 
