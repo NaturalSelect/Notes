@@ -6,6 +6,8 @@ Linux IO存储栈主要有以下7层:
 
 ## VFS
 
+### Introduction
+
 VFS层的作用是屏蔽了底层不同的文件系统的差异性，为用户程序提供一个统一的、抽象的、虚拟的文件系统，提供统一的对外API，使用户程序调用时无需感知底层的文件系统，只有在真正执行读写操作的时候才调用之前注册的文件系统的相应函数。
 
 VFS支持的文件系统主要有三种类型：
@@ -141,8 +143,6 @@ struct files_struct {
 ```
 
 `fd_array`数组存储了所有打开的`file`对象，用户程序拿到的文件描述符(`fd`)实际上是这个数组的索引。
-
-
 
 ### IO Stack
 
@@ -357,5 +357,230 @@ out:
 }
 ```
 
+`ext4_buffered_write_iter`最后调用`generic_perform_write`函数，这些通用函数是基本上所有文件系统的核心逻辑。
+
+然后从VFS层进入Page Cache层。
+
+### Page Cache
+
+对于写操作，文件系统最后调用`generic_perform_write`，对于读操作，则是`generic_file_aio_read`。
+
+`generic_perform_write`的流程如下：
+* 根据文件偏移量计算要写入的数据再PageCache中的位置。
+* 将用户态的Buffer拷贝到PageCache中。
+* 检查PageCache是否占用太多，如果是则将部分PageCache的数据刷回磁盘。
+
+`generic_file_aio_read`的流程如下：
+* 根据文件偏移量计算出要读取数据在PageCache中的位置。
+* 如果命中PageCache则直接返回，否则触发磁盘读取任务，会有预读的操作，减少IO次数。
+* 数据读取到PageCache后，拷贝到用户态Buffer中。
+
+使用Buffered IO时，VFS层的读写很大程度上是依赖于PageCache的，只有当Cache Missing，Cache过满等才会涉及到磁盘的操作。
+
+### Device File
+
+类似`/dev/sd*`这种设备文件虽然仍由VFS管理，但是程序访问它时，将直接调用设备驱动程序提供的相应函数。
+
+通常搭配`O_DIRECT`和`libaio`或（`io_uring`）一起使用。
+
+默认的块设备函数列表如下：
+
+```c
+const struct file_operations def_blk_fops = {
+	.open		= blkdev_open,
+	.release	= blkdev_release,
+	.llseek		= blkdev_llseek,
+	.read_iter	= blkdev_read_iter,
+	.write_iter	= blkdev_write_iter,
+	.iopoll		= iocb_bio_iopoll,
+	.mmap		= blkdev_mmap,
+	.fsync		= blkdev_fsync,
+	.unlocked_ioctl	= blkdev_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= compat_blkdev_ioctl,
+#endif
+	.splice_read	= filemap_splice_read,
+	.splice_write	= iter_file_splice_write,
+	.fallocate	= blkdev_fallocate,
+};
+```
+
+使用块设备时，将使用`def_blk_fops`。
+
+对此类文件的调用将会直接进入通用块设备层。
+
 ## Page Cache
 
+### Introduction
+
+在HDD时代，由于内核和磁盘速度的巨大差异，Linux内核引入了页高速缓存(PageCache)，把磁盘抽象成一个个固定大小的连续Page，通常为4K。对于VFS来说，只需要与PageCache交互，无需关注磁盘的空间分配以及是如何读写的。
+
+当我们使用Buffered IO的时候便会用到PageCache层，与Direct IO相比，用户程序无需offset、length对齐。是因为通用块层处理IO都必须是块大小对齐的。
+
+Buffered IO中PageCache帮我们做了对齐的工作：如果我们修改文件的offset、length不是页大小对齐的，那么PageCache会执行RMW的操作，先把该页对应的磁盘的数据全部读上来，再和内存中的数据做Modify，最后再把修改后的数据写回磁盘。虽然是写操作，但是非对齐的写仍然会有读操作。
+
+Direct IO由于跳过了PageCache，直达通用块层，所以需要用户程序处理对齐的问题。
+
+### Flush
+
+如果发生机器宕机，位于PageCache中的数据就会丢失；所以仅仅写入PageCache是不可靠的，需要有一定的策略将数据刷入磁盘。通常有几种策略：
+* 手动调用`fsync`、`fdatasync`刷盘。
+* 脏页占用比例超过了阈值，触发刷盘。
+* 脏页驻留时间过长，触发刷盘。
+
+Linux内核目前的做法是为每个磁盘都建立一个线程，负责每个磁盘的刷盘。
+
+### Perfetch
+
+从VFS层我们知道写是异步的，写完PageCache便直接返回了；但是读是同步的，如果PageCache没有命中，需要从磁盘读取，很影响性能。如果是顺序读的话PageCache便可以进行预读策略，异步读取该Page之后的Page，等到用户程序再次发起读请求，数据已经在PageCache里，大幅度减少IO的次数，不用阻塞读系统调用，提升读的性能。
+
+## Mapping Layer
+
+映射层是在PageCache之下的一层，由多个文件系统(Ext系列、XFS等，打开文件系统的文件)以及块设备文件(直接打开裸设备文件)组成，主要完成两个工作：
+
+* 内核确定该文件所在文件系统或者块设备的块大小，并根据文件大小计算所请求数据的长度以及所在的逻辑块号。
+* 根据逻辑块号确定所请求数据的物理块号，也即在在磁盘上的真正位置。
+
+由于通用块层以及之后的的IO都必须是块大小对齐的，我们通过DIO打开文件时，略过了PageCache，所以必须要自己将IO数据的offset、length对齐到块大小。
+
+## Generic Block Layer
+
+通用块层类似于VFS，封装了底层实际的磁盘设备。
+
+通用块层最核心的数据结构便是`bio`，描述了从上层提交的一次IO请求。
+
+```c
+struct bio {
+	struct bio		*bi_next;	/* request queue link */
+	struct block_device	*bi_bdev;
+	blk_opf_t		bi_opf;		/* bottom bits REQ_OP, top bits
+						 * req_flags.
+						 */
+	unsigned short		bi_flags;	/* BIO_* below */
+	unsigned short		bi_ioprio;
+	blk_status_t		bi_status;
+	atomic_t		__bi_remaining;
+
+	struct bvec_iter	bi_iter;
+
+	blk_qc_t		bi_cookie;
+	bio_end_io_t		*bi_end_io;
+	void			*bi_private;
+#ifdef CONFIG_BLK_CGROUP
+	/*
+	 * Represents the association of the css and request_queue for the bio.
+	 * If a bio goes direct to device, it will not have a blkg as it will
+	 * not have a request_queue associated with it.  The reference is put
+	 * on release of the bio.
+	 */
+	struct blkcg_gq		*bi_blkg;
+	struct bio_issue	bi_issue;
+#ifdef CONFIG_BLK_CGROUP_IOCOST
+	u64			bi_iocost_cost;
+#endif
+#endif
+
+#ifdef CONFIG_BLK_INLINE_ENCRYPTION
+	struct bio_crypt_ctx	*bi_crypt_context;
+#endif
+
+	union {
+#if defined(CONFIG_BLK_DEV_INTEGRITY)
+		struct bio_integrity_payload *bi_integrity; /* data integrity */
+#endif
+	};
+
+	unsigned short		bi_vcnt;	/* how many bio_vec's */
+
+	/*
+	 * Everything starting with bi_max_vecs will be preserved by bio_reset()
+	 */
+
+	unsigned short		bi_max_vecs;	/* max bvl_vecs we can hold */
+
+	atomic_t		__bi_cnt;	/* pin count */
+
+	struct bio_vec		*bi_io_vec;	/* the actual vec list */
+
+	struct bio_set		*bi_pool;
+
+	/*
+	 * We can inline a number of vecs at the end of the bio, to avoid
+	 * double allocations for a small number of bio_vecs. This member
+	 * MUST obviously be kept at the very end of the bio.
+	 */
+	struct bio_vec		bi_inline_vecs[];
+};
+
+struct bio_vec {
+	struct page	*bv_page;
+	unsigned int	bv_len;
+	unsigned int	bv_offset;
+};
+```
+
+所有到通用块层的IO，都要把数据封装成`bio_vec`的形式，放到`bio`结构体内。
+
+在VFS层的读请求，是以Page为单位读取的，如果改Page不在PageCache内，那么便要调用文件系统定义的`read_page`函数从磁盘上读取数据。
+
+```c
+static const struct address_space_operations ext4_da_aops = {
+	.read_folio		= ext4_read_folio,
+	.readahead		= ext4_readahead,
+	.writepages		= ext4_writepages,
+	.write_begin		= ext4_da_write_begin,
+	.write_end		= ext4_da_write_end,
+	.dirty_folio		= ext4_dirty_folio,
+	.bmap			= ext4_bmap,
+	.invalidate_folio	= ext4_invalidate_folio,
+	.release_folio		= ext4_release_folio,
+	.direct_IO		= noop_direct_IO,
+	.migrate_folio		= buffer_migrate_folio,
+	.is_partially_uptodate  = block_is_partially_uptodate,
+	.error_remove_page	= generic_error_remove_page,
+	.swap_activate		= ext4_iomap_swap_activate,
+};
+```
+
+## I/O Scheduler Layer
+
+Linux调度层是Linux IO体系中的一个重要组件，介于通用块层和块设备驱动层之间。IO调度层主要是为了减少磁盘IO的次数，增大磁盘整体的吞吐量，会队列中的多个bio进行排序和合并，并且提供了多种IO调度算法，适应不同的场景。
+
+Linux内核为每一个块设备维护了一个IO队列，item是`struct request`结构体，用来排队上层提交的IO请求。一个request包含了多个`bio`，一个IO队列queue了多个request。
+
+```cpp
+struct request {
+	......
+	// total data len
+	unsigned int __data_len;
+
+	// sector cursor
+	sector_t __sector;
+
+	// first bio
+	struct bio *bio;
+
+	// last bio
+	struct bio *biotail;
+	......
+}
+```
+
+上层提交的bio有可能分配一个新的request结构体去存放，也有可能合并到现有的request中。
+
+Linux内核目前提供了以下几种调度策略：
+* Deadline - 默认的调度策略，加入了超时的队列。适用于HDD。
+* CFQ - 完全公平调度器。
+* Noop - No Operation，最简单的FIFIO队列，不排序会合并。适用于SSD、NVME。
+
+## Block Dirver Layer
+
+每一类设备都有其驱动程序，负责设备的读写。IO调度层的请求也会交给相应的设备驱动程序去进行读写。大部分的磁盘驱动程序都采用DMA的方式去进行数据传输，DMA控制器自行在内存和IO设备间进行数据传送，当数据传送完成再通过中断通知CPU。
+
+通常块设备的驱动程序都已经集成在了kernel里面，也即就算我们直接调用块设备驱动驱动层的代码还是要经过内核。
+
+spdk实现了用户态、异步、无锁、轮询方式NVME驱动程序。块存储是延迟非常敏感的服务，使用NVME做后端存储磁盘时，便可以使用spdk提供的NVME驱动，缩短IO流程，降低IO延迟，提升IO性能。
+
+## Physical Device
+
+物理设备层便是我们经常使用的HDD、SSD、NVME-SSD等磁盘设备了。
