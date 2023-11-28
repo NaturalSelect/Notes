@@ -421,6 +421,8 @@ Buffered IO中PageCache帮我们做了对齐的工作：如果我们修改文件
 
 Direct IO由于跳过了PageCache，直达通用块层，所以需要用户程序处理对齐的问题。
 
+*NOTE：内核的存储体系中主要有两种缓存，一是 Page Cache，二是 Buffer Cache。Page Cache 是在 Linux IO 栈中为文件系统服务的缓存，而 Buffer Cache 是处于更下层的 Block Device 层，由于应用大部分的使用存储数据是基于文件系统，因此 Buffer Cache 实际上只是引用了 Page Cache 的数据，而只有在直接使用块设备跳过文件系统时，Buffer Cache 才真正掌握缓存。*
+
 ### Flush
 
 如果发生机器宕机，位于PageCache中的数据就会丢失；所以仅仅写入PageCache是不可靠的，需要有一定的策略将数据刷入磁盘。通常有几种策略：
@@ -429,6 +431,10 @@ Direct IO由于跳过了PageCache，直达通用块层，所以需要用户程�
 * 脏页驻留时间过长，触发刷盘。
 
 Linux内核目前的做法是为每个磁盘都建立一个线程，负责每个磁盘的刷盘。
+
+`fsync()` 的实现取决于文件系统，文件系统会将要求数据从缓存中强制写到持久设备中。但是这里还有另外一个大“麻烦”，通常成为 Block Device Cache(块设备缓存)，这类缓存并不存在归 Kernel 管理，它或许是传统磁盘上的控制器缓存，RAID 控制器缓存，它主要是被块设备自己管理。因此，大多数文件系统在实现 `fsync` 这类接口时，同时会使用 Kernel Block 模块提供的 `blkdev_issue_flush` API 去给块设备发送一个 Flush Request，块设备收到 Flush Request 后就会回写自身的缓存。
+
+但是如果机器上存在电容，那么实际上 Flush Request 会大大降低文件系统的读写性能，因此，文件系统会提供如 barrier 选项来让用户选择是否需要发送 Flush Request，比如 XFS 在 mount 时就支持 “barrier=0″ 来选择不发送 Flush Request。
 
 ### Perfetch
 
