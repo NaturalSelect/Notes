@@ -49,7 +49,8 @@
 * Performance Isolation and Fairness for Multi-Tenant Cloud Storage
 * FIFO Queues are All You Need for Cache Eviction
 * Asynchronous Directory Operations in CephFS
-* CRUSH Controlled, Scalable, Decentralized Placement of Replicated Data
+* CRUSH: Controlled, Scalable, Decentralized Placement of Replicated Data
+* MAPX: Controlled Data Migration in the Expansion of Decentralized Object-Based Storage Systems
 * Proportional-Share Scheduling for Distributed Storage Systems
 
 ## Hardware
