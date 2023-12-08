@@ -50,6 +50,7 @@
 * FIFO Queues are All You Need for Cache Eviction
 * Asynchronous Directory Operations in CephFS
 * CRUSH Controlled, Scalable, Decentralized Placement of Replicated Data
+* Proportional-Share Scheduling for Distributed Storage Systems
 
 ## Hardware
 
