@@ -1,0 +1,292 @@
+# Placement Group
+
+## Intrduction
+
+PG 位于 RADOS 层的中间一一往上负责接收和处理来自客户端的请求，往下负责将这些请求翻译为能够被本地对象存储所能理解的事务。当Cluster map改变时，PG映射的OSD也将随之改变，Ceph以此来实现PG的故障自动迁移。
+
+简言之，PG 是一些对象的集合一，每个对象都属于一个唯一的PG。对象名称的哈希值执行 `stable_mod(PG_NUM)` 后，其结果等于其所属PG的编号。
+
+|Term|Description|
+|-|-|
+|Acting Set|指一个有序的OSD集合，当前或者曾在某个Interval负责承载对应PG的PG实例。|
+|Authoritative History|权威日志。权威日志是 Peering 过程中执行数据同步的依据，通过交换 Info 并基于一定的规则从所有PG实例中选举产生。通过重放权威日志，可以使得 PG 内部就每个对象的应处于的状态(主要指版本号)再次达
+成一致。|
+|Backfill|Backfill是 Recovery 的一种特殊场景，指 Peering 完成后，如果基于当前权威日志无法对 Up Set 当中的某些 PG 实实施增量同步(如承这些 PG实的OSD 离线或者是新的OSD加人集群导致的 PG实例整体迁)则通过完全当前 Primary 所有对象的方式进行全量同步。|
+|Epoch| OSDMap 的版本号，由 OSDMonitor 负责生成，总是单调递增。Epoch 变化意味着 OSDMap 发生了变化，需要通过一定的策略扩散至所有客户端和位于服务端的 OSD。因此，为了避 Epoch 变化过于剧烈导致 OSDMap 相关的网络流量和集群存储空间显著增加，同时也导致 Epoch 消耗过快 (Epoch 为无符号32位整数，假定每秒产生13个 Epoch，那么10年时间就会耗光)一个特定时间段内所有针对OSDMap的修改会被折叠进入同一个 Epoch。|
+|Eversion|由 Epoch和Version 组成。Version总是由当前 Primary 负责生成，连续并且单调递增和 Epoch 一起唯一标识一次PG内的修改操作。|
+|Log|PG使用Log并基于Eversion 顺序记录所有客户端发起的修改操作的历史信息，为后续提供历史操作回溯和数据同步的依据。|
+|Info| PG的基本元数据信息。Peering过程中，通过交换Info可以由 Primary 选举得到权威日志，这是后续进行 Log同步和数据同步的基础。|
+|Interval|指OSDMap 的一个连续 Epoch 间隔，在此期间对应 PG的Acting Set、Up Set 等没有发生变化。Interval 和具体的 PG 绑定，这意味着即使针对同一个OSDMap 的 Epoch 变化序列，不同的PG也可能产生完全不同的Interval序列。每个Interval的起始 Epoch 也称为 `same_interval_since`。|
+|OS|ObjectStore，指OSD后端使用的对象存储引擎，例如 FileStore 或者 BlueStore。|
+|Peering|指(当前或者过去曾经)归属于同一个 PG所有的 PG实就本 PG所的全部对象及对象相关的元数据状态进行协商并最终达成一致的过程。Peering基于In和Log 进行。此外，这里的达成一致，即 Peering 完成之后并不意味着每个 PG实例都实时拥有每个对象的最新内容。事实上，为了尽快恢复对外业务，一旦 Peering 完成，在满足条件的前提下 PG就可以切换为 Active 状态继续接受客户端的读写请求，后续数据恢复(即Recovery)可以在后台执行。|
+|PGBackend|PGBackend 负责将针对原始对象的操作转化为副本之间的分布式操作。按照副本策略的不同，目前有两种类型的 PGBackend，分别是 ReplicatedBackend (对应多副本)和ECBackend (对应纠删码)。|
+|PGID|PG 的身份标识，由 pool-id + PG 在 pool 内唯一编号 + shard (仅适用于纠删码类型的存储池)组成|
+|PG Temp|Peering 过程中，如果当前 Interval 通过 CRUSH计算得到的 Up Set 不合理(例如 Up Set中的一些OSD新加人集群，根本没有 PG 的任何历史信息)那么可以通知OSDMonitor设置 PG Temp 来显式指定一些仍然具有相对完备 PG信息的OSD加入 Acting Set，使得Acting Set 中的OSD在完成 Peering 之后能够临时处理客户端发起的读写请求，以尽可能地减少业务中断时间。上述过程会导致 Up Set 和Acting Set 出现临时性的不一致。注意:<br/>1）之所以需要 (通过 PG Temp 的方式)修改 OSDMap，是因为需要同步通知到所有客户端，让它们后续(Peering 完成之后)将读写请求发送至新的Acting Set 而不是 Up Set中的Primary; <br/> 2）PG Temp 生效后，PG将处于 Remapped 状态;<br/>3）Peering 完成后，Up Set 中与Acting Set 不一致的OSD 将在后台通过 Recovery 或者Backh11 方式与当前 Primary 进行数据同步;数据同步完成后，PG需要重新修改 PG Temp为空集合，完成Acting Set 至 Up Set 的切换 (使得Acting Set 和 Up Set 的内容再次变得完全一致)，此时 PG可以取消 Remapped 标记。|
+|PGPool|PG 关联存储池的概要信息。如果是存储池快照模式，PGPool 中包含当前存储池所有的快照序列。|
+|Primary|指Acting Set 中的第一个OSD，负责处理来自客户端的读写请求，同时也是 Peering 的发起者和协同者。容易理解 Primary 不是固定不变的，而是可以在不同的OSD之间切换。容易理解 Primary 不是固定不变的，而是可以在不同的OSD之间切换。|
+|Pull/Push|Recovery 由 Primary主导进行，期间 Primary 通过 Pull 和 Push 的方式进行对象间的数据同步。如果 Primary 检测到自身有对象需要同步，可以通过 Pull 方式从 Replica 获取最新数据(Peering成功完成后可以感知到哪些Replica包含这些最新数据);如果Primary检测到某些 Replica 需要进行数据同步，可以通过 Push 方式主动向其推送最新数据。|
+|Recovery|指针对 PG 某些实例进行数据同步的过程，其最终目标是(结合 Backfill)将 PG重新变为Active+Clean 状态。Recovery 是基于 Peering 的结果进行的，一旦Peering 完成，并且PG 内有对象不一致 Recovery 就可以在后台进行。|
+|Replica|指当前ActingSet中除Primary之外的所有成员。|
+|Stray|PG实例所在的 OSD 不是 PG 当前 Ating Set 中的成员(是过去某个或者某些 Interval曾是)。如果对应的PG已经完成Peering，并且处于Active+Clean状态，那么这个PG实例稍后将被删除;如果对应的PG尚未完成 Peering，那么这个PG实例仍然有可能转化为 Replica。|
+|Up Set|指根据CRUSH 计算出来的有序的 OSD 集合，当前或者曾在某个 Interval负责承载对应 PG的PG 实例。一般而言，Acting Set 和 Up Set 总是相同的;但是也有一些特殊情况，此时需要在 OSDMap 中通过设置 PG Temp 来显式指定 Acting Set，这会导致 Up Set和Acting Set 出现不一致。|
+|Watch/Notify|用于客户端之间进行状态同步的一种(简单) 机制/协议，基于一个众所周知的对象进行，例如对 RBD而言，这个对象通常是image 的 header 对象。通过向指定对象发送 Watch 消息，客户端注册成为对象的一个观察者 (Watcher)，这些Watcher相关的信息将被固化至对象的基本属性之中，此后该客户端将收到所有向该对象发送的 Notify 消息，并通过 NotifyAck 进行应答。该 Watch 链路有超时限制，需要客户端周期性的发送Ping消息进行保活;超时后链路将被断开，客户端需要重连。通过向指定对象发送 Notify 消息，客户端成为对象的一个通知者 (Notifer)。在收到所有观察者响应(NotifvAck)或者超时之前，通知者(的后续行为)将被阻塞。|
+
+## Read/Write Flow
+
+### Head & Clone & Snapshot
+
+在没有引入快照机制之前，针对原始对象的修改操作非常简单，直接修改原始对象即可。引入快照功能之后，针对原始对象的修改操作变得复杂一为了支持快照回滚操作，一般而言可以通过 COW 机制将原始对象预先克隆出来一份，然后再真正执行针对原始对象的修改操作，但是有两个特殊场景需要额外考虑一一删除原始对象和重新创建原始对象。
+
+如果原始对象被删除，但是仍然被有效的快照引用，显然此时需要借助一个临时对象来保存原始对象相关的历史信息，以便后续进行快照回滚(同时又不能影响原始对象已经不存在这个事实!)。这个临时对象称为 `snapdir` 对象，顾名思义，它仅仅用于保存和原始对象历史快照及克隆相关的信息。
+
+同样的道理，如果原始对象重新被创建并且关联的 `snapdir` 对象存在，则需要执行 `snapdir` 对象清理，并将其存储的快照及克隆历史信息同步转移回原始对象。
+
+### Object Info & SnapSet
+
+对象有两个关键属性(对前端应用不可见)分别用于保存对象的基本信息和快照信息，称为 OI(ObjectInfo)和 SS (Snap Set)属性。
+
+|OI（`object_info_t`）|ObjectState（OI的内存表示）|
+|-|-|
+|![F1](./F1.png)|![F3](./F3.png)|
+
+|SnapSet|SnapSetContext（SnapSet的内存表示）|
+|-|-|
+|![F2](./F2.png)|![F4](./F4.png)|
+
+### SnapContext
+
+如果是前端应用自定义快照模式(例如 RBD，可以针对每个 image 执行快照操作)那么由前端应用下发的请求(op)会携带 SnapContext，指示当前应用的快照信息;如果是存储池快照模式，那么PGPool 中的 SnapContext会指示当前存储池的快照信息(PG每次更新 OSDMap 的同时会同步更新 PGPool)。
+
+|SnapContext|
+|-|
+|![F5](./F5.png)|
+
+### ObjectContext
+
+op 操作对象之前，必须先获得对象上下文;在进行读写之前，则必须获得对象上下文的读锁(对应op 仅包含读操作)或者写锁 (对应 op 包含写操作)。原则上，`op_shardedwg`的实现原理可用于确定对访问同一个 PG 的 op 的顺序，但是由于写是异步的(纠删码存储池的读也是异步的)，即写操作在执行过程如果遇到堵塞会让出CPU，所以需要在对象上下文中额外引人一套读写互斥锁机制来确定 op 的顺序。
+
+|ObjectContext|
+|-|
+|![F6](./F6.png)|
+
+### Log
+
+日志用于解决 PG副本之间的数据一致性问题，使用 PG元数据对象的omap 保存。
+
+|Log Entry（`pg_log_entry_t`）|
+|-|
+|![F7](./F7.png)![F8](./F8.png)![F9](./F9.png)|
+
+所有日志在PG中使用一个公共的日志队列进行管理。
+
+|Log（`pg_log_t`）|
+|-|
+|![F10](./F10.png)|
+
+
+### OpContext
+
+|成员|含义|
+|-|-|
+|at_version(Eversion)|如果op 包含修改操作，那么 PG将为op 生成一个 PG内唯一的序列号，该序列号连续且单调递增，用于后续(例如 Peering)对本次修改操作进行追踪和回溯|
+|clone_obc(ObjectContext)|克隆对象上下文仅在 p 行过程中产生了新的克隆，或者 op直接针对快照对象或者克隆对象进行操作时加载|
+|lock_type|读写锁类型|
+|lock manager(ObcLockManager)|指向多个ObiectContext的rwstate用于同时访问多个对象(同一个对象的克隆对象、snapdir 对象等)的读写锁|
+|log|PG基于当前op产生的所有日志集合。<br/>注意:日志是基于对象的。针对原始对象(例如 head 对象)的所有修改操作只会产生一条单一的日志记录，但是快照机制的存在使得 PG在执行op 过程中有可能创建克隆对象、创建或者删除 snapdir 对象。因为后面这些操作是针对不同的对象，所以需要为其生成单独的日志记录，所以需要使用集合。|
+|modified_ranges|op本次修改操作波及的数据范围|
+|new_obs(ObiectState)|op 执行之后(准确地说，是在 Primary 完成op事务装之后)新的对象状态|
+|new_snapset(SnapSet)|op 执行之后(准确地说，是在 Primary 完成op事务装之后)新的SS属性|
+|obc(ObjectContext)|对象上下文|
+|obs(ObjectState)|op 执行之前的对象状态|
+|on_applied|回调上下文，OS将事务写人日志后执行|
+|on_committed|回调上下文，OS 将事务写人磁盘后执行（对BlueStore而言，写日志和写磁盘是同时完成的）。|
+|on_finish|on_finish典型操作为删除OpContext|
+|on_success|on_success典型操作为执行 Watch/Notify 相关的操作。因此一般而言，这两个操作需要保证在op 真正完成后(即在所有副本之间都完成之后)执行，执行顺序为on_success ->on_fnish。|
+|op|关联的客户端请求|
+|snapc(SnapContext)|对象当前最新的快照上下文，每次收到op 时，基于 op 或者PGPool更新|
+|snapset(SnapSet)|op 执行之前，对象关联的 SS 属性|
+|snapset_obc(ObjectContext)|`snapdir` 对象上下文仅在op涉及`snapdir` 对象操作时加载|
+
+### RepGather
+
+如果 op 包含修改操作，那么需要由 Primary 主导在副本之间执行复制写。顾名思义，当op 涉及的事务由 Primary 完成封装后，会由 RepGather 接管，在副本之间进行分发和同步。
+
+![F11](./F11.png)
+
+### I/O Flow
+
+客户端读写流程，大体上可以分为如下几个阶段：
+* OSD 收到客户端发送的读写请求，将其封装为一个 op 并基于其携带的 PGID 转发至相应的 PG。
+* PG 收到 op 后，完成一系列检查，所有条件均满足后，开始真正执行 op。
+* 如果 op 只包含读操作，那么直接执行同步读(对应多副本)或者异步读(对应纠删码)，等待读操作完成后向客户端应答。
+* 如果 op 包含写操作，首先由 Primary 基于 op 生成一个针对原始对操作的事务及相关日志，然后将其提交至 PGBackend，由 PGBackend 按照复制策略转化为每个 PG 实例(包含 Primary 和所有 Replica)真正需要执行的本地事务并进行分发，当 Primary收到所有副本的写入完成应答之后，对应的 op 执行完成，此时由 Primary 向客户端回应写人完成。
+
+### Message Receive & Dispatch
+
+OSD绑定的 Public Messenger 收到客户端发送的读写请求后，通过OSD注册的回调函数- `ms_fast_dispatch` 进行快速派发(OSD 是 Dispatcher 的一个子类，Dispatcher负责对 Messenger 中的消息进行派发)，这个阶段主要包含以下处理：
+
+* 基于消息(message)创建一个 op ，用于对消息进行跟踪，并记录消息携带的 Epoch。
+* 查找 OSD 关联的客户端会话上下文(OSD会为每个客户端创建一个独立的会话上下文)将 op 加人其内部的 `waiting_on_map` 队列(该队列为FIFO队列)，获取当前OSD所持有的OSDMap，并将其与 `waiting_on_map` 队列中的所有op 逐一进行比较一如果 OSD 当前 OSDMap 的 Epoch 不小于 op 携带的 Epoch，则进一步将其派发至OSD的`op_shardedwq` 队列;否则直接终止派发。
+* 如果会话上下文中的 `waiting_on_map`不为空，说明至少存在一个op，其携带的 Epoch 比 OSD 当前所持有 OSDMap 的 Epoch 更新，此时将其加 OSD 的全局 `session_waiting_for_map` 集合，该集合中汇集了当前所有需要等待OSD更新完 OSDMap 之后才能继续处理的会话上下文(这里的处理指继续派发会话上下文中的op);否则将对应的会话上下文从 `session_waiting_for_map` 中移除。
+
+op 进入 `op_shardedwq` 队列之后，开始排队并等待处理。顾名思义，`op_shardedwg` 是OSD内部的op 工作队列(Work Queue)，“sharded”关键字则表明其内部实际上存在多个队列(称为 shard list，因为 `op_shardedwq` 对外呈现为一个队列，所以这些内部队列也可以理解为原始队列的分片)。
+
+`op_shardedwq`最终关联一个线池（`osd_op_tp`），负责对`op_shardedwq` 中的op真正进行处理。`osd_op_tp` 包含多个服务线程，具体数目可以根据需要配置。例如假定 `op_shardedwq`中实际工作队列数目为`s`(受配置项`osd_op_num shards` 控制)，每个工作队列需要安排`t`个服务线程(受配置项`osd_op_num_threads_per_shard` 控制)，则最终`osd_op_tp`总的服务线程数目为`s*t`。op 进入哪个工作队列是由它的PG决定的，PGID 取模工作队列总数得到的index，决定op将进入哪个队列。因此相同的PG总是进入相同的队列，这样就确定了op的顺序。
+
+`op_shardedwq` 的内部工作队列可以采用多种实现方式，默认为 `WeightedPriorityQueue`。顾名思义，这是一种基于权重的优先级调度队列一-当 op 携带的优先级大于等于设置的值时(受配置项`osd_op_queue_cut_of` 控制)，队列工作在纯优先级模式(也称为严格优先级模式)：队列内部首先按照优先级被划分为多个优先级队列，然后每个优先级队列按照 op 携带的不同客户端地址再次划分为若干个会话子队列。
+
+* 人队时，按照每个 op 携带的优先级，首先找到对应的优先级队列，其次按 op 携带的客户端地址找到其归属的会话子队列，然后从队尾加入。
+* 出队时，则总是查找当前优先级最高的优先级队列并从当前指针指向的会话子队列队头出列(会话子队列是严格的 FIFO 队列)，为了避免同一优先级有来自不同客户端的 op 饿死，每次有 op 成功出队后，其内部指针会从当前会话子队列自动指向下一个会话子队列。
+
+当 op 携带的优先级小于设置的闽值时，队列工作在基于权重的 Round-robin 调度模式（WRR），其与纯优先级模式的区别在于:出队时，选择哪个优先级队列是完全随机的，但是选择结果与每个优先级队列的优先级强相关：优先级越高，则被选中的概率越大:反之优先级低的队列其被选中的概率也低。
+
+当op 成功加人 `op_shardedwq` 中的某个工作队列后，相应的服务线程会被唤醒，通过 OSD 注册的回调函数，找到关联的 PG，由其针对 op 真正执行处理。整个 op 在 PG中的处理过程最终形成了一个十分冗长的函数调用链。
+
+### do_request
+
+`do_request` 作为PG处理 op 的第一步，主要完成一些全局(PG级别的)检查:
+* Epoch - 如果 op 携带的 Epoch 更新，那么需要等待 PG 完成 OSDMap 同步之后才能进行处理。
+* 如果存在以下情况，则直接丢弃op：
+  * op对应的客户端连接已经断开。
+  * 收到op 时，PG当前已经切换到一个更新的 Interval (即 PG 此时的 `same_interval_since` 比 op 携带的 Epoch 要大，后续客户端会进行重发)。
+  * op 在 PG 分裂之前发送 (后续客户端会进行重发)。
+* PG自身状态一如果PG不是 Active 状态，op 同样会被堵塞(这里指来自客户端的op会被堵塞。PG内部产生的一些 op，典型如 Pull/Push，可以在非 Active 状态下被PG直接处理)，需要等待 PG变为 Active 状态之后才能被正常处理。
+
+![F12](./F12.png)
+
+### do_op
+
+通过 `do_request` 校验之后，PG 可以对 op 做进一步的处理。进一步的，如果确认是来自客户端的op，那么PG 通过 `do_op` 对 op 进行处理
+
+op 可能因为不同的原因被推迟处理，PG内部维护了多种不同类型的 op 重试队列，用于对不同场景进行区分。
+
+|Queues|
+|-|
+|![F13](./F13.png)![F14](./F14.png)|
+
+处理流程如下：
+
+![F15](./F15.png)
+
+`do_op`主要进行一些对象级别的检查：
+* 按照 op 携带的操作类型(单个 op 可以含多个操作)初始化 op 中的各种志位，如:
+  * `CEPH_OSD_RMW_FLAG_READ` - 说明 op 中携带读操作。
+  * `CEPH_OSD_RMW_FLAG_WRITE` - 说明op 中携带写操作。
+  * `CEPH_OSD_RMW_FLAG_RWORDERED` - 说明需要对 op 进行读写排序。
+* 完成对op的合法性校验，出现以下情况之一，op 将被认为不合法:
+  * PG不包含 op 所携带的对象。
+  * op 携带了 `CEPH_OSD_FLAG_PARALLELEXEC`标志，指示 op 之间可以并行执行。
+  * op 携带了 `CEPH OSD FLAG BALANCE[LOCALIZE]_READS` 标志，指示 op 可以被Primary/Replica 执行，但是当前处理op的OSD既不是Primary 也不是 Replica。
+  * op 对应的客户端未被授权执行 op 所要求操作的能力/权限(例如客户端仅被授予可读权限，但是 op 携带了写操作)。
+  * op 携带对象名称、key 或者命名空间长度超过最大限制(在使用传统的 FileStore 引擎时，受底层本地文件系统限制，例如 XFS，所能保存的扩展属性对长度有限制；将OS切换至 BlueStore 时则无此限制)。
+  * op 对应的客户端被列入黑名单。
+  * op 在集群被标记为 Full 之前发送(PG 通过比对 op 带的 Epoch 和集群标记为Full时的 Epoch 感知)并且没有携带 `CEPH_OSD_FLAG_FULL_FORCE` 标志。
+  * PG所在的OSD可用存储空间不足。
+  * op 包含写操作并且试图访问快照对象。
+  * op 包含写操作并且一次写入的数据量过大(超过配置项`osd_max_write_size`)。
+* 检查 op 携带的对象是否不可读或者处于降级状态或者正在被 Scrub，是则加人对应的队列进行排队。
+* 检查 op 是否为重发(基于 op 携带的 reqid 在当前 Log 中查找，如果找到，说明为重发)。
+* 获取对象上下文，创建 OpContext 对 op 进行追踪，并通过 `execute_ctx`(处理OpContext) 真正开始执行op。
+
+#### About Storage Space
+
+
+
+### execute_ctx
+
+`execute_ctx`首先基于当前快照模式，更新 OpContext 中的快照上下文(SnapContext)如果是自定义快照模式，直接基于 op 携带的快照信息更新，否则基于 PGPool 更新。为了保证数据一致性，所有包含修改操作的op 会预先由 Primary 通过 `prepare_transaction` 封装成一个 PG 事务，然后由不同类型的 PGBackend 负责转化为 OS 能够识别的本地事务，最后在副本之间进行分发和同步。
+
+如果 op 包含读操作，那么在`prepare_transaction` 中会同步去磁盘读取相应的内容(指多副本，纠删码复制方式下将执行异步读)，因此需要在执行 `prepare_transaction` 之前预先获取对象上下文中的 `ondisk_read_lock` 并在`prepare_transaction`之后释放。
+
+![F16](./F16.png)
+
+### prepare_transaction
+
+`PGTransaction` 是一种抽象数据类型，它记录了一组以原始对象(即从前端应用视角不考虑复制策略)作为目标的修改操作，后续可以为不同的 PGBackend 翻译成 OS 能够理解的本地事务并执行。与`ObjectStore.:Transaction`(即 OS 事务)类似，`PGTransaction`主要包含一系列操作(修改)原始对象的接口。
+
+|PGTransaction|
+|-|
+|![F17](./F17.png)![F18](./F18.png)|
+
+`prepare_transaction` 负责生成`PGTransaction`，执行分为三个阶段：
+* 通过 `do_osd_ops` 生成原始 op 对应的PG事务。
+* 如果 op 针对 head 对象操作，通过 `make_writable` 检查是否需要预先执行克降操作。
+* 通过 finish ctx 检查是否需要创建或者删除 `snapdir` 对象，生成日志，并更新对象的 OI 和 SS 属性。
+
+值得注意的是，针对同一个对象同一种类型的多次操作可能存在重合部分或者可以合并的可能，典型如 write 和 zero，因此实现上将这类操作进行特殊处理，统一使用一类称为`interval_map`的数据结构进行管理。
+
+顾名思义，`interval_map` 使用 map 对interval(对 PGTransaction 而言，这里的interval 即原始对象中的逻辑地址`<offset,length>`，map 意味着其中的 interval是有序的，并且基于每个 interval 的 offset 进行排序)进行追踪，其特别之处在于需要指定两个自定义函数——split 和 merge，分别应对用于 interval map 中插新的interval时的去重(去重的过程需要从老 interval 中移除重合的部分，因此这个操作称为 split)与合并操作。例如针对 write 操作，split 总是直接将 interval 中的重合部分使用新的待写入数据覆盖，而 merge 则只需要将左右两次写操作进行合并即可(这里的左右写操作分别指满足合并条件时，offset 较小和offset 较大的写操作)。
+
+除了上述操作原始对象的接口，PGTransaction 还额外提供了一个名为 `safe_create_traverse` 的接口，用于 PGBackend 将 PG 事务转化为自身能够理解的本地事务。特别的如果涉及多对象操作，`safe_create_traverse` 内部能够保证这些事务以合理的顺序执行，例如假定待修改的 head 对象关联了快照，转化为本地事务时依然会先创建克隆对象再修改head 对象，而不是相反。
+
+### do_osd_ops
+
+![F19](./F19.png)
+
+`do_osd_ops`将op转换成PG事务：
+* 检查 write 操作携带的 `truncate_seq`，并和对象上下文中保存的 `truncate_seq` 比较从而判定客户端执行 write 操作和trimtrunc/truncate操作的真实顺序，并对 write操作涉及的逻辑地址范围进行修正。
+* 检查本地写入逻辑地址范围是否合法一例如限制对象大小不超过100GB(受配置项`osd_max_object_size`控制)。
+* 将write操作转化为PGTransaction中的事务.
+* 如果是满对象写(包含新写或者覆盖写)，或者为加写并且之前存在数据校验和，则重新计算并更新 OI 中的数据校验和，作为后续执行Deep Scrub的依据;否则清除数据校验和。
+* 在 OpContext 中累积本次 write 修改的逻辑地址范围以及其他统计(例如写操作次数、写人字节数)，同时更新对象大小。
+
+当前实现也支持通过 write 操作隐式创建一个新对象，因此如果对应的对象不存在则默认创建，此时将在 PGTransaction 中额外生成一个 create 事务，同时设置 `new_obs.exist` 为true。
+
+### make_writable
+
+![F20](./F20.png)
+
+将 op 携带的全部操作都转化为 PGTransaction 中的事务之后，如果op 针对 head对象修改，那么通过 `make_writable` 来判定 head 对象是否需要预先执行克隆。
+
+`make_writable` 首先判断 head 对象是否需要执行克隆：
+* 取对象当前的 SnapSet，和 OpContext 中 SnapContext 中的内容进行比较一如果 SnapSet 中最新的快照序列号比SnapContext 中最新的快照序列号小，说明自上一次快照之后，又产生了新的快照，此时不能直接针对 head 对象进行修改，而是需要先执行克隆(默认执行全对象克隆)。
+* 如果 SnapContext 携带了多个新的快照序列号(例如自某次快照产生后，很长时间内没有针对本对象执行过任何修改操作，而中间又多次执行了快照操作)，那么所有比 SnapSet 中更新的快照序列号都将关联至同一个克隆对象(亦即后续针对这些快照执行回滚时，都将回滚至同一个克隆对象)。
+
+这里存在一种特殊情况一如果当前操作为删除 head 对象，并且该对象自创建之后没有经历过任何修改(亦即此时 SnapSet 为空)也需要对该 head 对象正常执行克隆后再删除，后续将创建一个 `snapdir` 对象来转移这些快照及相关的克隆信息。
+
+创建克隆对象时，需要同步更新 SS 属性中的相关信息：
+* 在 clones 集合中记录当前克隆对象中的最新快照序列号。
+* 在 `clone_size` 集合中更新当前克隆对象大小--因为默认使用全对象克隆，所以克隆对象大小为执行克隆时 head 对象的实时大小。
+* 在 `clone_overlap` 集合中记录当前克隆对象与前一个克隆对象之间的重合部分。
+
+此外，如果确定需要执行克隆，则需要为克隆对象生成一条新的、独立的日志，并同步更新op中日志版本号。
+
+最后基于SnapContext 来更新对象SS属性中的快照信息。
+
+### finish_ctx
+
+![F21](./F21.png)
+
+`finish_ctx`主要完成以下操作:
+* 如果创建 head 对象并且 `snapdir` 对象存在，则删除 `snapdir` 对象，同时生成一条删除 `snapdir` 对象的日志;如果删除 head 对象并且对象仍然被快照引用，则创建 `snapdir` 对象，同时生成一条创建 `snapdir` 对象的日志，并将 head 对象的 OI和SS 属性使用snapdir 对象转存。
+* 如果对象存在，更新对象 OI 属性，如果是 head 对象，同步更新其SS 属性。
+* 生成一条 op 操作原始对象的日志，并加至现有 OpContext 中的日志集合中
+* 在 OpContext 关联的对象上下文中应用最新的对象状态和SS上下文。
+
+### Callbacks
+
+完成 PG 事务准备后，针对纯粹的读操作而言，如果是同步读，例如多副本，op 已经执行完毕，此时可以直接向客户端应答;如果是异步读，例如纠删码，则将 op 挂入PG内部的异步读队列(`in_progress_async_reads`)，等待异步读完成之后再向客户端应答。
+
+如果是写操作，则分别注册如下几类回调函数：
+* `on_commit` - 执行时，向客户端发送写人完成应答。
+* `on_success` - 执行时，进行与 Watch/Notify 相关的处理。
+* `on_finish` - 执行时，删除 OpContext。
+
+执行顺序：`on_commit` > `on_success` > `on_finish`。
+
+### Transaction Dispatch & Synchronous
+
+所有准备工作就绪后，可以由 Primary 进行副本间的本地事务分发和整体同步，这个过程通过一个 RepGather 来完成。RepGather 基本内容来自 OpContext (例如基于OpContext 初始化 RepGather 时会同步转移 OpContext 中的所有回调函数至 RepGather).区别在于 RepGather 增加了用于副本间进行同步的字段一一典型如 `all_applied` 和`all_committed` 两个标志，分别用于表示是否收到了所有副本写入日志和写人磁盘的应答。
+
+基于 OpContext 初始化 RepGather 之后，可以通过 `issue_repop` 将 RepGather 提交至PGBackend，由后者负责将 PG 事务转化为每个副本间的本地事务之后再进行分发。需要注意的是，在 PG 事务提交至 PGBackend 之后，本地事务有可能立即开始执行，因此在此之前需要先获取波及对象的对象上下文中的 `ondisk_write_lock`，防止和非客户端触发的本地写操作冲突，这些锁将在本地事务执行完成之后释放。此外，因为后续将由 PGBackend接替PG负责对整个事务在副本间的完成情况进踪(这是因为副本间的写日志/磁盘完成应答是由 PGBackend 直接处理的!)所以将PG事务提交至 PGBackend 时同样要注册几类回调函数，用于指示事务整体完成之后的后续操作：
+
+* `on_all_applied` - PGBackend 收到所有副本应答写入日志完成之后执行，执行后将设置 RepGather 中的`all_applied` 标志为 true，同时调用`eval_repop` 来评估 RepGather是否最终完成。
+* `on_all_commit`- PGBackend 收到所有副本应答写入磁盘完成之后执行，执行后将设置 RepGather 中的`all_committed` 标志为 true，同时调用 `eval_repop` 来评估RepGather 是否最终完成。
+* `on_localapplied_sync` - PGBackend 完成本地事务写日志之后即可同步执行(这里同步的含义取决于 OS 的具体实现，例如 BlueStore 的实现中，通常情况下，`on_localapplied_sync` 将由 BlueStore 中的同步线程执行，而不用再次提交至其内部的 Finisher 线程异步执行)目前主要用于释放 RepGather 中持有的各类对象上下文中的`ondisk_write_lock`。
+
+`eval_repop` 用于评估 RepGather 是否真正完成。如果真正完成，则依次执行 RepGather 中注册过的一系列回调函数，最后将 RepGather 从全局的 RepGather 队列中移除 RepGather。
+
+`submit_transaction` 完成PG的事务分发：
+* 对多副本而言，因为每个副本保存的内容完全相同，所以通过 `submit_transaction` 将PGTransaction 转化为每个副本的本地事务无需过多的额外处理(一个重要的例外是需要将日志中的所有条目标记为不可回滚)直接通过 `safe_create_traverse` 逐个事务完成参数传递即可(PGTransaction 和 ObjectStore::Transaction 的事务接口基本是重合的)，之后构造消息向每个副本进行本地事务分发。
+* 纠删码的情况比较复杂，特别的，当涉及覆盖写(overwrites)时，如果改写的部分不足一个完整条带(指写人的起始地址或者数据长度没有进行条带对齐)，则需要执行RMW，因此这期间会多次调用 `safe_create_traverse` 分别执行补齐读(Read)、重新生成完整条带并重新计算校验块(Modify)单独生成每个副的事务并构造消息进行分发(Write)同时在必要时执行范围克隆和对 PG 日志进行修正，以支持 Peering 期间(可能需要执行)的回滚操作。
+
