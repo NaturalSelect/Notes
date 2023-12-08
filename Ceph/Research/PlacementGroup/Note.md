@@ -9,8 +9,7 @@ PG 位于 RADOS 层的中间一一往上负责接收和处理来自客户端的�
 |Term|Description|
 |-|-|
 |Acting Set|指一个有序的OSD集合，当前或者曾在某个Interval负责承载对应PG的PG实例。|
-|Authoritative History|权威日志。权威日志是 Peering 过程中执行数据同步的依据，通过交换 Info 并基于一定的规则从所有PG实例中选举产生。通过重放权威日志，可以使得 PG 内部就每个对象的应处于的状态(主要指版本号)再次达
-成一致。|
+|Authoritative History|权威日志。权威日志是 Peering 过程中执行数据同步的依据，通过交换 Info 并基于一定的规则从所有PG实例中选举产生。通过重放权威日志，可以使得 PG 内部就每个对象的应处于的状态(主要指版本号)再次达成一致。|
 |Backfill|Backfill是 Recovery 的一种特殊场景，指 Peering 完成后，如果基于当前权威日志无法对 Up Set 当中的某些 PG 实实施增量同步(如承这些 PG实的OSD 离线或者是新的OSD加人集群导致的 PG实例整体迁)则通过完全当前 Primary 所有对象的方式进行全量同步。|
 |Epoch| OSDMap 的版本号，由 OSDMonitor 负责生成，总是单调递增。Epoch 变化意味着 OSDMap 发生了变化，需要通过一定的策略扩散至所有客户端和位于服务端的 OSD。因此，为了避 Epoch 变化过于剧烈导致 OSDMap 相关的网络流量和集群存储空间显著增加，同时也导致 Epoch 消耗过快 (Epoch 为无符号32位整数，假定每秒产生13个 Epoch，那么10年时间就会耗光)一个特定时间段内所有针对OSDMap的修改会被折叠进入同一个 Epoch。|
 |Eversion|由 Epoch和Version 组成。Version总是由当前 Primary 负责生成，连续并且单调递增和 Epoch 一起唯一标识一次PG内的修改操作。|
@@ -176,7 +175,7 @@ op 可能因为不同的原因被推迟处理，PG内部维护了多种不同类
 * 完成对op的合法性校验，出现以下情况之一，op 将被认为不合法:
   * PG不包含 op 所携带的对象。
   * op 携带了 `CEPH_OSD_FLAG_PARALLELEXEC`标志，指示 op 之间可以并行执行。
-  * op 携带了 `CEPH OSD FLAG BALANCE[LOCALIZE]_READS` 标志，指示 op 可以被Primary/Replica 执行，但是当前处理op的OSD既不是Primary 也不是 Replica。
+  * op 携带了 `CEPH_OSD_FLAG_BALANCE[LOCALIZE]_READS` 标志，指示 op 可以被Primary/Replica 执行，但是当前处理op的OSD既不是Primary 也不是 Replica。
   * op 对应的客户端未被授权执行 op 所要求操作的能力/权限(例如客户端仅被授予可读权限，但是 op 携带了写操作)。
   * op 携带对象名称、key 或者命名空间长度超过最大限制(在使用传统的 FileStore 引擎时，受底层本地文件系统限制，例如 XFS，所能保存的扩展属性对长度有限制；将OS切换至 BlueStore 时则无此限制)。
   * op 对应的客户端被列入黑名单。
@@ -187,10 +186,6 @@ op 可能因为不同的原因被推迟处理，PG内部维护了多种不同类
 * 检查 op 携带的对象是否不可读或者处于降级状态或者正在被 Scrub，是则加人对应的队列进行排队。
 * 检查 op 是否为重发(基于 op 携带的 reqid 在当前 Log 中查找，如果找到，说明为重发)。
 * 获取对象上下文，创建 OpContext 对 op 进行追踪，并通过 `execute_ctx`(处理OpContext) 真正开始执行op。
-
-#### About Storage Space
-
-
 
 ### execute_ctx
 
@@ -290,3 +285,174 @@ op 可能因为不同的原因被推迟处理，PG内部维护了多种不同类
 * 对多副本而言，因为每个副本保存的内容完全相同，所以通过 `submit_transaction` 将PGTransaction 转化为每个副本的本地事务无需过多的额外处理(一个重要的例外是需要将日志中的所有条目标记为不可回滚)直接通过 `safe_create_traverse` 逐个事务完成参数传递即可(PGTransaction 和 ObjectStore::Transaction 的事务接口基本是重合的)，之后构造消息向每个副本进行本地事务分发。
 * 纠删码的情况比较复杂，特别的，当涉及覆盖写(overwrites)时，如果改写的部分不足一个完整条带(指写人的起始地址或者数据长度没有进行条带对齐)，则需要执行RMW，因此这期间会多次调用 `safe_create_traverse` 分别执行补齐读(Read)、重新生成完整条带并重新计算校验块(Modify)单独生成每个副的事务并构造消息进行分发(Write)同时在必要时执行范围克隆和对 PG 日志进行修正，以支持 Peering 期间(可能需要执行)的回滚操作。
 
+### Space Control
+
+Ceph提供以下参数对存储空间进行控制：
+
+![F31](./F31.png)
+
+每个OSD 通过心跳机制周期性的检测自身空间使用率，并上报至 Monitor。Monitor 检测到任一OSD的空间使用率突破预先设置的安全屏障时，或者产生告警(超过`mon_osd_nearfull_ratio`)，或者将集群设置为 Full (超过 `mon_osd_full ratio`)并阻止所有客户端继续写入。
+
+`osd_backfill_full_ratio`配置项存在的意义在于有些数据迁移是集群内部自动触发的，例如数据恢复或者自动平衡过程中以 Backfill 方式进行的PG实整体迁。
+
+而 `osd_fail_safefull_ratio` 配置项存在的意义则是如果 `mon_osd_full_ratio` 设置得过高(因为从OSD上报空间使用统计到 Monitor将集群标记为 Full 并真正阻止客户端写人有滞后，所以如果 `mon_osd_full_ratio` 设置不合理，仍然存储客户端继续产生大量写请求将OSD写满的可能)或者某些客户端使用了某些特殊的手段突破集群为 Full 时客户端不能继续写入的限制(例如携带`CEPH_OSD_FLAG_FULL_FORCE`标志)此时 `osd_failsafe_full_ratio` 可以作为防止产生将磁盘空间彻底写满从而导致 OSD 永久性变成只读(FileStore 使用本地文件系统(XFS、ext4、ZFS 等)接管磁盘，例如ZFS 在磁盘空间使用率超过一定门限时，整个文件系统将永久性的变成只读)这类灾难性后果的最后一道屏障。
+
+上述这种空间控制策略虽然看上去有些极端(例如将整个集群标记为 Full 时，其实际整体空间利用率可能还不到 70%!)但却是基于哈希策略分布数据的必要举措，因为无法预料到客户端请求最终会落到哪个OSD上。其次，对 OSD本地空间利用率进行控制的必要性在于大部分本地文件系统在磁盘空间使用率超过 80% 时都会变得极其缓慢，此时集群可能无法再满足时延敏感类应用的需求。
+
+## State Transmit
+
+很多Ceph 引以为傲的特性，例如自动数据平衡和自动数据迁移，都是以 PG为基础实现的。PG 状态的多样性充分反映了其功能的多样性和复杂性，状态之间的变迁则常常用于表征 PG在不同功能之间进行了切换(例如由 Active+Clean 变为Active+Clean+ScrubbingDeep 状态，说明 PG当前正在或者即将执行数据深度扫)或者 PG 内部数据处理流的进度(例如由Active+Degraded 变为 Active+Clean 状态，说明 PG在后台已经完成了所有损坏对象的修复)。
+
+上述状态指的是能够为普通用户直接感知的外部状态，实现上，PG 内部通过状态机来驱动 PG 在不同外部状态之间进行迁移，因此，相应的 PG 有内(状态机状态)外(负责对外呈现)两种状态。
+
+|State|
+|-|
+|![F22](./F22.png)![F23](./F23.png)|
+
+需要注意的是，这些外部状态并不都是互斥的，某些时刻 PG 可能处于表中多个状态的叠加态之中，常见的如: Active+Clean，表明 PG 当前一切正常;Active+Degraded+Recovering，表明 PG已经完成了 Peering 并且存在数据一致性问题这些不一致的数据(对象)正在后台接受修复等等。
+
+状态机当前一共有四级状态，每一种状态又可以包含若干子状态所有子状态中第一个状态为其默认状态。例如该状态机初始化时，默认会进入 Initial 子状态，又比如当该状态机从其他状态，例如 Reset 状态，跳转至 Started 状态时，默认会进入 Started/Start 子状态。
+
+![F24](./F24.png)
+
+|Event|
+|-|
+|![F25](./F25.png)![F26](./F26.png)|
+
+状态机的整体工作流程如下：
+
+![F27](./F27.png)
+
+### Create PG
+
+OSDMonitor 收到存储池创建命令之后，最终通过PGMnitor 异步向池中每个 OSD 下发批量创建PG命令。和读写流程类似，PG的创建是在 Primary 的主导下进行的即 PGMonitor 仅需要向当前 Primary 所在的OSD下发 PG 创建请求 Replica 会在随后由 Primary 发起的 Peering 过程中自动被创建。
+
+和读写请求不同，因为创建PG的过程中强烈依赖 OSDMap，所以 OSD 收到该请求后，需要预先获取 OSD 内部的全局互斥锁，以确保该消息处理过程中，OSD 当前关联的 OSDMap 不会发生变化，并最终通过`handle_pg_create`进行处理。
+
+![F28](./F28.png)
+
+因为 PG 创建必然涉及集群 OSDMap 更新，所以 OSD 处理这类消息之前，必须保证当前所持有的 OSDMap 与消息产生时的OSDMap 同步，否则需要将 op 加人 OSD全局的 `waiting_for_map` 队列(注意不要和上一节中提到的PG内部的 `waiting_for_map`队列混淆!)，同时向 Monitor 发送一个订阅 OSDMap 请求，等待自身OSDMap 更新之后再对 op 进行处理。
+
+同时还要其他常规性检查，例如确认 PG 关联的存储池是否依然存在、Primary 是否发生了变化、Up Set 是否和Acting Set 相等等。
+
+事实上，PGMonitor 在 OSD发送 PG建请求之前已经对上述信息进行过确认，之所以还要进行这类检查，主要是因为当 OSD 收到 op 时，整个集群拓扑结构可能又发生了变化(例如用户创建存储池之后马上又删除)，导致 OSD当前持有的OSDMap 可能比 op 产生时的 OSDMap 更新。一些极端情况下，例如由于网络振荡导致集群短时间内产生了大量 OSDMap 变化，为了防止 PG 在多个 OSD 上被创建(例如 PG的Primary由A -> B -> C -> A，即OSD A收到此PG创建请求时，PG的 Primary 期间经过多次切换，最终又切回 OSD A)，我们还需要对整个 PG 的历史信息进行回溯。
+
+对 PG 历史信息进行回溯的过程称为 `project_pg_history`，基于OSDMap 变化列表进行，以PG创建时的 OSDMap 作为起点，以OSD 当前持有的最新 OSDMap 作为终点其结果将产生三个属性，分别为：
+* `same_interval_since` - 标识PG最近一个Interval的起点。
+* `same_up_since` - 识自该 Epoch 开始，PG 当前的 Up Set 没有发生过变化。
+* `same_primary_since` -标识自该 Epoch 开始，PG当前的Primary 没有发生过变化。
+
+因此，如果完成 `project_pg_history` 之后产生的 `same_primary_since` 大于op 携带的Epoch，说明期间 Primary 曾经发生过变化，我们需要放弃执行本次操作，将决策权交给当前的 Primary(对应 PG已经在别的OSD上创建成功的情况)或者PGMonitor，后续由Primary通过Peering执行 Primary 切换或者由PGMonitor重新发起创建。
+
+如果满足创建条件，在 `handle_pg_create` 的最后一步，OSD 将通过向 `handle_pgpeering_evt` 函数投递一个NullEvt 事件，正式开始着手进行PG创建。该事件没有任何实际作用，仅仅用于初始化创建流程。
+
+顾名思义，`handle_pg_peering_evt` 函数负责处理 Peering 相关的事件。该函数首先判断对应的 PG是否存在，如果存在，则直接从 OSD 全局的 `pg_map` 获取 PG 内存结构。如果不存在，先判该 PG 是否位于待除 PG 列表之中（PG删除是异步的），如果为是，则尝试终止删除并恢复 PG(Ceph 称为“拯救”PG，这种方案之所以可行一一例如不用担心类似“即使拯救成功 PG 中的数据可能也已经残缺不全”这种情况是因为随后 PG 将通过 Peering 重新进行数据同步);如果为否或者PG失败(例如已经被彻底删除)则直接创建 PG，流程如下：
+
+* 直接调用后端 OS 事务接口，依次建 Collection 和 PG元 数据对象。
+* 创建PG内存结构，并将其加OSD的全局`pg_map`。
+* 填充Info，通过 OS 事务接将其写数据对象的omap。
+* 向状态机投递两个事件——Initialize 和ActMap，用于初始化状态机。如果OSD当前为 Primary，那么设置 Primary 状态为 Creating，同时状态机进入Started/Primary/Peering/GetInfo 状态，准备开始执行 Peering。
+* 通知OS开始执行上述过中产生的本地事务，同时派发期间产生消息(例如Peering相关的消息)。
+
+查找 PG 成功或者完成 PG 创建之后，`handle_pg_peering_evt`会将调用者输入的 Peering 事件加人 PG的 `peering_queue` 队列，然后再将 PG 加OSD内部的 `peering_wq` 队列，由 OSD后续统一调度和处理。
+
+### Peering
+
+和处理客户端发起的读写请求类似在OSD内部，所有需要执行 Peering 的 PG也会安排一个专门的 `peering_wq` 工作队列，该工作队列同样需要绑定一个线程池（`osd_tp`） 。
+
+然而与 `op_shardedwq` 不同的是：进 `peering_wq` 的不是 op，而是需要处理 Peering 事件的 PG本身。
+
+此外，`pering_wq` 为批处理队列，亦即 `osd_tp` 中的线程对 `peering_wq` 中的条目(即PG)进行处理时，可以一次出列和处理多个条目(受配置项 `osd_peering_wq_batch_size` 控制)，因此，当 `osd_tp` 包含多个服务线程时(受配置项`osd_op_threads`控制) 需要由 `peering_wq` 自身实现互斥机制，防止其中的条目同时被多个服务线程处理。
+
+当PG从`peering_wq` 出列时，OSD 最终通过`process_peering_events`进行批量处理：
+* 创建一个 RecoveryCtx，用于批量收集本次处理过程中所有 PG 产生的与 Peering 相关的消息，例如 Query (Info、Log等)、Notify 等。
+* 逐个PG处理 - 取 OSD 最新的 OSDMap，通过 `adance_pg` 查 PG 是否需要执行 OSDMap 更新操作。如果为否，说明直接由 Peering 事件触发，将该事件从 PG内部的 `peering_queue` 队列出列，并投递至 PG 内部的状态机进行处理；否则在`advance_pg`内部直接执行 OSDMap 更新操作，完成之后将 PG再次加 `peering_wq` 队列。
+* 检查是否需要通知 Monitor 设置本 OSD 的 `up_thru`。
+* 批量派发 RecoveryCtx 中累积的 Query、Notify 消息。
+
+如果 PG 当前的OSDMap 与 OSD的最新 OSDMap 版本号相差过大为防止单个 PG 过多的占用时间片，需要分多次对 OSDMap 进行同步，因此每处理一定数量的 OSDMap 后(受配置项`osd_map_max_advance` 控制)，OSD让出时间片，将该PG重新加 `peering_wq`，等待下次继续执行 OSDMap 同步。
+
+如果`advance_pg` 测到 PG 需要进行OSDMap 更新，那么每更新一次，都会同步向状态机投递一个 AdvMap 事件，该事件携带新老 OSDMap 以及 PG 在这两张OSDMap 下的 Up/Acting Set 等映射结果，供状态机判断是否需要重启 Peering。
+
+如果为是，那么状态机将进 Reset 状态，并对 PG 进行去活-一例如暂停 PG 内部的 ScrubRecovery 操作、丢弃尚未完成的 op 等，同时清理 PG 诸如 Active、Recovering 等状态，准备执行 Peering。`advance_pg` 完成或阶段性的完成OSDMap 同步之后，最终会向 PG状态机投递一个ActMap 事件，通知 PG可以开始执行 Peering。
+
+判断是否需要进行或者重启 Peering 的法则比较简单，只要检查本次 OSDMap 更新之后是否会触发 PG 进人一个新的 Interval 即可。因为PG 支持对 OSDMap 进行批量同步，所以在正式进行 Peering 之前，PG 在这些历史的 OSDMap 变化序列中可能产生了一系列已经发生过的Interval，称为 `past_intervals`。
+
+单个Interval 用于指示一个相对稳定的 PG映射周期一-在此期间，PG的Up Set和Acting Set 没有发生变化，关联存储池的副本数、最小副本数以及 PG 数目也没有发生过变化，其磁盘数据结构如下所示：
+
+|`pg_interval_t`|
+|-|
+|![F29](./F29.png)![F30](./F30.png)|
+
+由Interval定义可见，Interval中已经保存了针对该Interval后续执行 Peering 所需要的全部(OSD)信息，因此，每次生成 `past_intervals` 之后，PG可以立即将 `past_intervals` 作为元数据之一固化至本地磁盘，防止 PG 持续引用一些较老的 OSDMap，进而导致OSD需要存储大量OSDMap，浪费存储空间。
+
+生成Interval的规则比较简单：每次从OSD取当前待更新的 OSDMap 时，我们取其中 PG 关联存储池的副本数、最小副本数和 PG 数目，并基于 CRUSH 重新计算 PG的Acting Set、Acting Primary、Up Set、Up Primary，然后与前一个相邻的OSDMap 进行比较一如果上述属性中任意一个发生变化，说明老的 Interval 结束，新的 Interval开始，此时可以开始填充老 Interval 中的 `first`、`last`、`acting`、`primary`、`up`、`up_primary`等属性，这里的难点在于如何设置`maybe_went_rw`。
+
+`maybe_went_rw`用于标识对应Interval中PG有无可能变为Active 状态从而接受客户端发起的读写请求。显然，如果该标志为 `true`，为了避免潜在的数据丢失风险，我们后续需要通过 Peering 进一步探测此 Interval 中的每个相关的OSD来进行确认：反之则可以直接跳过该Interval。`maybe_went_rw`用来确认过去的最后的Active Set（数据迁移的source）。
+
+为简单计，假定某个集群只有编号为A和B的两个OSD，考虑如下场景:
+1. Epoch 1 - A和B正常在线。
+2. Epoch 2 - A和B同时掉电，但是因为 OSDMonitor 检测OSD宕有滞后，所以仅有A被标记为Down。
+3. Epoch 3 - OSDMonitor 检测到 B宕掉，将B标记为 Down。
+4. Epoch 4 - A重新上电并被 OSDMonitor 标记为 Up。
+
+上述集群中OSD状态变化过可以用OSDMap 简记为:
+```log
+EPOCH 1: A B
+EPOCH 2: B
+EPOCH 3:
+EPOCH 4: A
+```
+
+假设PG的`min_size`为1，那么最后的`maybe_went_rw`的Epoch就是2，对应的Acting Set为`[B]`，然后由于OSDMonitor滞后，我们可能早已失去了OSD B，并且B可能永远丢失了，这就会导致A在与上一个`maybe_went_rw`的Epoch进行Peering的时候卡住。Ceph引入`up_thru`解决这个问题，`up_thru`记录OSD上一个完成Peering的Epoch。
+
+```log
+EPOCH 1: A B
+EPOCH 2: B   up_thru[B]=0
+EPOCH 3:
+EPOCH 4: A
+```
+
+当某个Interval的Acting Set成功完成Peering都必须告知Monitor更新 `up_thru` 然后才能开始提供服务。
+
+进一步的，考虑上面这个例子的另一种可能情形，例如 A 和 B分别掉电:
+1. Epoch 1 - A和B正常在线。
+2. Epoch 2 - A掉电并被OSDMonitor 标记为 Down，PG 通过B正常完成了 Peering。
+3. Epoch 3 - OSDMonitor 成功设置 B的 `up_thru` 为2。
+4. Epoch 4 - OSDMonitor 检测到B宕掉，将B标记为 Down。
+5. Epoch 5 - A重新上电并被 OSDMonitor 标记为 Up。
+
+```log
+EPOCH 1: A B
+EPOCH 2: B   up_thru[B]=0
+EPOCH 3: B   up_thru[B]=2
+EPOCH 4:
+EPOCH 5: A
+```
+
+这样，引人与OSD状态相关的 `up_thru` 属性后，设置`maybe_went_rw`为true的条件变为：
+* Acting Primary存在。
+* Acting Set 大于存储池最小副本数(注意:因为最小副本数可以被手动修改，针对纠删码而言，同时要求Acting Set 大于等于k值)。
+* 该Interval内，PG(Primary)所在的OSD成功更新了`up_thru` 属性。
+
+完成 `past_intervals` 计算之后，PG可以正式开始 Peering。但是因为集群的OSDMap可能一直处于动态变化之中，如果 PG 在 Peering 的过程中，再次收到 OSDMap 更新通知，那么此时需要重新计算 `past_intervals` 并重启 Peering 流程(Interval可以被合并处理的原因在于PG对于对象的修改操作是基于日志进行的，而 Peering 总是企图基于日志将所有对象都同步更新到其最新版本，这可以通过针对对象的一系列操作日志进行顺序重放实现)。每次更新 `past_intervals` 之后，为了防止重复计算 (因而大量引用一些老的OSDMap)，PG会同步更新 Info 中的 `same_interval_since` 属性，将其指当前PG已经计算得到的最新 Interval，并和生成的 `past_intervals` 一并写入本地磁盘。
+
+#### GetInfo
+
+如果状态机在 Reset 状下收到 ActMap 事件，则意味着可以开始正式执行 Peering。依据PG自身在新OSDMap 中的身份，通过向状态机发送 MakePrimary 或者 MakeStray事件，状态机将分别进入Started/Primary/Peering/GetInf 状态或者 Started/Stray 状态后者意味着对应的PG实例需要由当前 Primary 按照 Peering 的进度和结果进一步确认其身份。
+
+针对Primary，因为此时执行 Peering 的主要依据（`past_intervals`） 已经生成，可以据此来收集本次需要参与 Peering 的全部 OSD 信息，并最终将其加人一个集合，称为PriorSet。
+
+简言之，构建 PriorSet 的过程就是针对 `past_intervals` 中的Interval 进行逆序遍历找出所有我们感兴趣的Interval。
+
+首先，Interval不能发生在当前 Primary 的 `last_epoch_started` 之前。
+
+当 Peering 接近尾声之时 (PG变为 Active 之前)为了避免由于 OSD再次掉电导致前功尽弃，我们将在最后一步由 Primary 通知所有副本更新Info中的 `last_epoch_started` 将其指向本次 Peering 成功完成时的 Epoch，并和日志以及 Info 中的其他信息一并固化至本地磁盘。
+
+因此，如果 Interval 发生在当前 Primary 的`last_epoch_started` 之前，说明其在上一次成功完成的 Peering 中已经被处理过，无需再次进行处理。这也解释了为什么我们要针对 `past_intervals`进行逆序遍历，因为一旦某个Interval 发生在 Primary 的 `last_epoch_started` 之前，那么 `past_intervals` 中更早的 Interval 必然都可以直接忽略，此时可以直接结束遍历。
+
+
+
+#### GetLog
+
+#### GetMissing
