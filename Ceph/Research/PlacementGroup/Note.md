@@ -301,7 +301,7 @@ Ceph提供以下参数对存储空间进行控制：
 
 ## State Transmit
 
-很多Ceph 引以为傲的特性，例如自动数据平衡和自动数据迁移，都是以 PG为基础实现的。PG 状态的多样性充分反映了其功能的多样性和复杂性，状态之间的变迁则常常用于表征 PG在不同功能之间进行了切换(例如由 Active+Clean 变为Active+Clean+ScrubbingDeep 状态，说明 PG当前正在或者即将执行数据深度扫)或者 PG 内部数据处理流的进度(例如由Active+Degraded 变为 Active+Clean 状态，说明 PG在后台已经完成了所有损坏对象的修复)。
+很多 Ceph 引以为傲的特性，例如自动数据平衡和自动数据迁移，都是以 PG为基础实现的。PG 状态的多样性充分反映了其功能的多样性和复杂性，状态之间的变迁则常常用于表征 PG在不同功能之间进行了切换(例如由 Active+Clean 变为Active+Clean+ScrubbingDeep 状态，说明 PG当前正在或者即将执行数据深度扫)或者 PG 内部数据处理流的进度(例如由Active+Degraded 变为 Active+Clean 状态，说明 PG在后台已经完成了所有损坏对象的修复)。
 
 上述状态指的是能够为普通用户直接感知的外部状态，实现上，PG 内部通过状态机来驱动 PG 在不同外部状态之间进行迁移，因此，相应的 PG 有内(状态机状态)外(负责对外呈现)两种状态。
 
@@ -441,18 +441,136 @@ EPOCH 5: A
 
 如果状态机在 Reset 状下收到 ActMap 事件，则意味着可以开始正式执行 Peering。依据PG自身在新OSDMap 中的身份，通过向状态机发送 MakePrimary 或者 MakeStray事件，状态机将分别进入Started/Primary/Peering/GetInf 状态或者 Started/Stray 状态后者意味着对应的PG实例需要由当前 Primary 按照 Peering 的进度和结果进一步确认其身份。
 
-针对Primary，因为此时执行 Peering 的主要依据（`past_intervals`） 已经生成，可以据此来收集本次需要参与 Peering 的全部 OSD 信息，并最终将其加人一个集合，称为PriorSet。
+针对Primary，因为此时执行 Peering 的主要依据（`past_intervals`） 已经生成，可以据此来收集本次需要参与 Peering 的全部 OSD 信息，并最终将其加人一个集合，称为PriorSet（“先前”集合）。
 
 简言之，构建 PriorSet 的过程就是针对 `past_intervals` 中的Interval 进行逆序遍历找出所有我们感兴趣的Interval。
 
-首先，Interval不能发生在当前 Primary 的 `last_epoch_started` 之前。
+首先，Interval不能发生在当前 Primary 的 `last_epoch_started`（上次完成Peering的Epoch） 之前。
 
 当 Peering 接近尾声之时 (PG变为 Active 之前)为了避免由于 OSD再次掉电导致前功尽弃，我们将在最后一步由 Primary 通知所有副本更新Info中的 `last_epoch_started` 将其指向本次 Peering 成功完成时的 Epoch，并和日志以及 Info 中的其他信息一并固化至本地磁盘。
 
 因此，如果 Interval 发生在当前 Primary 的`last_epoch_started` 之前，说明其在上一次成功完成的 Peering 中已经被处理过，无需再次进行处理。这也解释了为什么我们要针对 `past_intervals`进行逆序遍历，因为一旦某个Interval 发生在 Primary 的 `last_epoch_started` 之前，那么 `past_intervals` 中更早的 Interval 必然都可以直接忽略，此时可以直接结束遍历。
 
+需要注意的是，Info 当中实际保存了两个 `last_epoch_started` 属性：
+* 一个位于Info下 - 由每个副本收到 Primary 发送的Peering完成通知(Notify)之后更新并和 Peering 结果一并存盘。
+* 另一个则位于 Info 的 History 子属性之下 - 由 Primary 收到所有副本 Peering 完成通知应答之后才能更新和存盘，。Primary 在更新 History 中的 `last_epoch _started` 属性后，会同步设置 PG 为 Active 状态(如果此时Acting Set 小于存储池最小副本数，则为 Peered 状态)。
 
+构建 PriorSet 的过程中，如果我们捕获到某个必须要处理(感兴趣)的Interval 不足以完成 Peering，例如所有Acting Set 中的OSD目前都处于离线状态，或者Acting Set 中当前剩余在线的 OSD不足以完成数据修复( Ceph 的强一致性设计，针对客户端的写请求，只有当所有副本都完成之后才会向客户端应答，因此，针对多副本，只要任意一个OSD 存活就足以进行数据修复;针对纠删码，其实现原理要求 Acting Set 中当前存活的 OSD 数目不小于 k 值才能进行数据修复)，那么此时可以直接将 PG 设置为 Down 状态，终止 Peering。
+
+如果 PriorSet 构建成功，那么可以继续进行 Peering。
+
+作为 Peering 的第一步，Primary 首先向所有 PriorSet 中需要探测的OSD(即构造 PriorSet 时，Acting Set中当前仍然在线的 OSD。之所以称为探测，是因为每个Interval 即使设置了 `maybe_went_rw`，也未必一定会产生客户端读写请求，因此在未获取确切的日志信息之前，这个举动带有试探性质) 发送 Query 消息，集中拉取 Info，以获取概要日志信息。
+
+Primary 共计会向 Stray 发送三种类型的消息，分别为 Query、Info和 Log。Query 消息同样可以用于获取 Info 或者 Log，区别在于 Query 消息不会更新Stray当前状态，亦即 Query 消息仅用于 Primary 向 Stray 收集信息，并不能确认其后续是否变为 Replica，真正参与到 Peering 流程中来。
 
 #### GetLog
 
+当所有 Info 收集完毕之后，Primary 通过向状态机发送一个 GotInfo 事件，跳转至Started/Primary/Peering/GetLog 状态，可以开始着手进行日志同步。为此，Primary 需要首先基于如下原则选取一份权威日志，作为同步的基准(以多副本为例):
+
+* 优先选取具有最新内容的日志(即Info中的 `last_update` 最大)。
+* 优先选取保留了更多日志条目的日志（即Info中的 `log_tail` 最小）。
+* 优先选择当前Primary。
+
+为了保证每个Interval 切换之后能够正常发生客户端读写，PG必须首先在新的 Interval内成功完成Peering，而 Peering 成功完成必然意味着 PG至少已经将全部Acting Set 中的日志记录同步到了最新。
+
+因此，实际操作时，我们可以进一步缩小权威日志的候选范围，仅从最近一次成功完成过 Peering 的那些 PG 当中选取，由前面的分析，即需要查找所有 Info 当中最大的 `last_epoch_started`，并以此作为基准。
+
+如果选取权威日志失败，那么PG 将向状态机发送一个 IsIncomplete 事件，跳转至 Started/Primary/Peering/Incomplete 状态，同时将自身状态设置为 Incomplete。反之，PG可以开始基于权威日志进行日志同步，为此需要确定 PriorSet 当中哪些副本需要或者值得去同步，这个过程称为 `choose_acting`。
+
+由于CRUSH选择 Up Set 的随机性，某些情况下，Up Set 中的某些 OSD 或者因为没有 PG 的任何历史信息，或者因为 PG 版本过于落后(PG 能够保存的志是有限的)，导致它们无法通过日志以增量的方式(称为 Recovery)同步，而只能通过拷贝其他健康 PG中全部内容的方式(称为 Backfill)来进行同步，如果这种情况发生在 Primary 之上，将导致 PG长时间无法接受客户端发起的读写请求。
+
+一个变通的办法是尽可能选择一些还保留有相对完整内容的 PG 副本进行过渡，对应的OSD 称为 PG Temp(即这些 OSD 是PG的“临时”载体)。
+
+通过在OSDMap 中设置 PG Temp，并显式替换 CRUSH 的计算结果。为此我们需要对基于CRUSH“计算”得到的 PG 映射结果进行区分：一种对应原始计算结果，称为 Up Set;另一种称为Acting Set，其结果依赖于 PG Temp 一如果 PG Tep 有效，则使用PGTemp 填充，否则使用 Up Set 填充。
+
+当客户端需要向集群发送读写请求时，总是选择当前Acting Set 中的第一个OSD(亦即Acting Primary)进行发送。当Up Set 中的副本在后台通过 Recovery 或者 Backfill 完成数据同步时，此时可以通知OSDMonitor 取消 PG Temp，使得 Acting Set和 Up Set 再次达成一致，客户端后续的读写业务也随之切回至老的 Primary(即Up Primary)。
+
+出现PG Temp的情况称为Remapped，它同时也是一种 PG外部状态，表明当前 Up Set 中的某些 OSD 需要或者正在通过 Backfill 进行修复，这些OSD和当前 Acting Set 中的所有 OSD 一起组成一个新的集合，我们称为 ActingBackfill。
+
+考虑到我们最终仍然需要将 Acting Set 切回 Up Set，因此，在 Peering 成功完成之后，Acting Set 切回 Up Set 之前，为了避免不必要的数据同步，我们需要针对在此期间由客户端所产生的写请求进行特殊处理。
+
+如果该对象正在被 ActingBackfill 集合当中任意一个OSD 执行 Backfi1，则阻塞此请求，等待 Backfill 完成后，按如下方式处理：所有 Acting Set 中的 OSD 和所有已经完成该对象 Backfill 的OSD正常执行事务；所有尚未完成该对象 Backfill的OSD，则直接执行一个空事务(因为这些OSD 上还不存在这些对象!)，仅用于更新日志、统计等元数据信息。
+
+`choose_acting`为 PG选出一组 OSD 充当 Acting Set。为了和 CRUSH 计算的结果进行区分，我们将 `choose_acting` 选择的结果称为 `want_acting`（Up Set可能与其不一样），选择的原则为：
+* 首先选取 Primary。如果当前 Up Set 中的 Primary 能够基于权威日志修复或者自身就是权威日志，则直接将其选为 Primary ;否则选择权威日志所在的 OSD作为Primary。选中的Primary 同步加入`want_acting`列表。
+* 其次，依次考虑 Up Set 中所有不在 `want_acting` 列表中的 OSD，如果其还能够基于权威日志修复，则加人 `want_acting` 列表，等待后续通过日志修复；反之，将其加入 Backfill 列表，等待后续通过 Backfill 方式修复。
+* 如果当前 `want_acting` 列表大小等于存储池副本数，则终止：否则继续从当前Acting Set中依次选择能够基于日志修复的OSD加`want_acting`列表。
+* 如果当前 `want_acting` 列表大小等于存储池副本数，则终止;否则继续从所有返回过Info的OSD中选取能够基于日志修复的OSD加 `want_acting` 列表，直至当前`want_acting`大小等于存储池副本数，或者所有返回过Info的OSD遍历完成。
+
+如果 `choose_acting` 选不出来足够的副本完成数据同步(例如针对纠删码而言，要求存活的副本数不小于 k 值才能进行数据修复)，那么 PG 将进 Incomplete 状态;如果 `choose_acting` 选出来的 `want_acting` 和当前的Acting Set 不一致，说明需要借助 PG Temp 临时进行过渡，Primary 将首先向 Monitor 发送设置 PG Temp 请求，随后向状态机投递一个 NeedActingChange 事件，将状态机设置为 Started/Primary/WaitActingChange 状态等待PG Temp在新的OSDMap 生效后继续。
+
+为了进一步缩短 Peering 流程，Ceph 引入了一种对 PG Temp进行预填充的机制，称为 Prime PG Temp，其主要设想在于每次 OSDMonitor 在新的 OSDMap 生效之后，同步计算基于当前 OSDMap 产生的所有 PG 映射结果，然后赶在下一个 OSDMap 生效之前，判定本次 OSDMap 变化是否有可能会导致某些 PG 发生 Remapping。如果有可能，例如下一个OSDMap 变化是由某些 OSD 宕掉触发，则基于下一个即将生效的 OSDMap 实时计算新的 PG 映射结果，并与基于当前 OSDMap 计算得到的 PG 映射结果相比较，预先填充那些即将受到影响 PG 的 PG Temp并使之在下一个 OSDMap 中一并生效，从而避免这些 PG 在后续 Peering 过程中再次向 OSDMonitor 请求更新 PG Temp。这种预填充带有猜测性质，如果 PG 后续通过  Peering 选出来的 PG Temp 与之不相符，仍然需要通过发送 PG Temp 请求至 OSDMonitor 进行修改。
+
+Primary 接下来将进行日志同步。如果 Primary 自身没有权威日志，那么需要通过发送 Query 消息去权威日志所在的 OSD拉取权威日志至本地。为了尽可能地减少日志传输 Primary 会预先计算待拉取的日志量，即计算待拉取日志的起点 (终点就是权威日志最新日志条目对应的版本号)。这从所有 Acting Set 中选择最小的 `last_update` 即可(由 `last_update` 定义，它是PG所拥有最新日志对应的版本号)。
+
+成功获取到权威日志之后，Primary 可以将其和本地日志进行合并，生成新的权威日志:
+
+* 考虑拉取过来的日志中是比 Primary 更老的日志条目。因为 Primary后续需要对所有 Acting Set 中的副本通过日志进行修复，所以为了防止某些副本需要用到较老的日志而 Primary 当前又没有(比如这些副本最新日志版本号比Primary 最老日志版本号（`tail`）还小)，则只能从权威日志所在的 OSD上去获取。因为日志能够删除的前提是对应的操作必然在当时的副本之间已经完成同步，所以这部分日志和 Primary 自身不存在一致性问题，无需进行特殊处理，直接追加在 Primary 本地日志的`tail`即可。
+* 考虑拉取过来的日志中是比 Primary 更新的日志条目。原则上，仅需要将新的日志条目按顺序依次追加到当前 Primary 日志的 `head` 即可，但是需要考虑一种特殊情况，即 Primary 最后更新的那条日志如何处理。
+
+日志使用 Eversion 进行标识和排序。Eversion 包含两个部分：
+* 一是产生日志时 OSDMap 对应的 Epoch。
+* 二是由 Primary 负责生成的版本号 Version。
+
+|Primary|Authoritative|
+|-|-|
+|![F32](./F32.png)|![F33](./F33.png)|
+
+对比两者最后一条日志，容易发现它们的 Version 相同但是 Epoch 不同 (这种现象通常由于 PG 的 Interval 发生了切换导致)，即这两条日志产生了分歧，那么此时应该如何处理这种分歧呢？
+
+种自然的想法是先将 Primary 本地与权威日志产生分歧的日志进行回退，即先解决分歧，然后再执行合并。考虑到这些产生分歧的日志仍然可能操作同一个对象，也可以先将 Primary 本地有分歧的日志取出，待和权威日志完成合并之后，再集中解决分歧。
+
+和权威日志合并的过程中，如果 Primary 发现本地有对象需要修复，那么会将其加人missing列表，完成合并之后(或者 Primary 自身就拥有权威日志) Primary 通过向状态机发送一个GotLog 事件，切换至Started/Primary/Peering/GetMissing 状态，同时固化合并后的日志及 missing列表至本地磁盘，开始向所有能够通过 Recovery 恢复的OSD(后续称为 Peer)发送Query 消息，以获取它们的日志。同理，收到每个 Peer 的完整日志后通过和本地日志比对(此时Primary 已经完成了和权威日志同步) Primary可以构建所有Peer的missing列表，作为后续执行 Recovery 的依据。
+
 #### GetMissing
+
+每个PG实例的 missing列表记录了自身所有需要通过 Recovery 进行修复的对象信息。以对象为单位，为了后续能够被 Primary 正确的修复，missing 列表中每个条目仅需要记录如下两个重要信息：
+* `need` - 对象目标版本号。
+* `have` - 对象本地版本号。
+
+当Primary 收到每个 Peer 的本地日志后，可以通过日志合并的方式得到每个 Peer的missing列表，这一过程和上一节中我们提到的 Primary 自身和权威日志合并的过程类似，最终也是通过解决分歧日志得到的（即使用权威的覆盖非权威的）。
+
+为了解决分歧日志，我们首先将所有分歧日志按照对象进行分类一即所有针对同一个对象操作的分歧日志都使用同一个队列进行管理，然后逐个队列(对象)进行处理。
+
+假定针对同一个对象操作中的一系列分歧日志中，最老的那条分歧日志生效之前对象的版本号为 `prior_version`（“先前”版本），则针对每个队列(对象)的处理都可以归结为以下五种情形之一：
+* 本地存在比分歧日志条目更新的日志。将本地对象删除，将其加入 missing 列表，同时设置其 `need` 为 权威版本，`have`为 0 (即本地没有)。
+* 对象之前不存在(例如`prior_version` 为0，或者最老的分歧日志操作类型为CLONE)。直接删除对象。
+* 对象当前位于missing列表之中(例如上一次 Peering 完成之后，Primary 刚刚更新了自身的 missing 列表，但是其中的对象还没来得及修复，系统再次发生掉电)。因为missing列表中 `have` 指示对象当前的本地版本号，所以如果 `have` 等于 `prior_version`，说明所有分歧日志针对该对象的操作尚未生效(因此也就无需执行回滚)，此时可以直接将对象从 missing 列表中移除。反之，则说明至少有部分分歧日志操作已经生效，此时需要将对象回滚至最老的分歧日志操作之前的版本，即 `prior_version`，这通过修改对象在 missing 列表中的 `need` 为 `prior_version`实现。
+* 对象不在missing列表之中同时所有分歧日志都可以回滚。此时将所有分歧日志按照从新到老的顺序依次执行回滚。
+* 对象不在missing列表之中并且至少存在一条分歧日志不可回滚。此时将本地对象直接删除，将其加入 missing 列表，同时设置其 `need` 为 `prior_version`，`have`为`0`。
+
+当Primary 成功收集到所有 Peer 日志并据此生成各自的missing列表之后，通过向状态机投递一个 Activate 事件，进入 Started/Primary/Active/Activating 状态，开始执行激活PG之前的最后处理。
+
+#### Activate
+
+随着 Peering 逐渐接近尾声，在 PG 正式变为 Active 状态接受客户端读写请求之前还必须先固化本次 Peering 的成果，以保证其不致因为系统掉电而前功尽弃，同时需要初始化后续在后台执行 Recovery 或者 Backfill 所依赖的关键元数据信息，上述过程称为Activate。
+
+`last_epoch_started` 用于指示上一次 Peering 成功完成时的 Epoch，但是因为 Peering 涉及在多个 OSD之间进行数据和状态同步，所以同样存在进度不一致的可能。为此，我们设计了两个 `last_epoch_started`，一个用于标识每个参与本次 Peering的PG 实例本地 Activate 过程已经完成，直接作为本身 Info 的子属性存盘;另一个保存在Info的History子属性下，由 Primary 在检测到所有副本的Activate 过程都完成后统一更新和存盘。
+
+同时，因为 ActingBackfill 中的成员已经全部确定，此时可以按照每个成员的实际情况，分别发送 Info 或者 Log 消息，将它们转化为 Sarted/ReplicaActive 状态，并参与到后续客户端读写、Recovery 或者 Backfill 流程中来，具体有以下几种情形：
+* Peer 不需要进行数据恢复，例如 Peer 是权威日志所在的 OSD，则直接向其发送 Info 消息，通知其更新 `last_epoch_started` 即可。
+* Peer 需要重新开始 Backfill，此时设置 Info 中的 `last_backfill` 为空，同时向其发送 Log 消息，指示后续需要执行 Backfill。
+* Peer 可以通过 Recovery 进行修复，此时直接向其发送 Log 消息，携带 Peer 缺少的那部分日志。
+
+如果 Peer 收到 Log 消息，首先检测自身是否需要重启 Backfill，是则初始化 Backfill设置;否则说明仍然可以通过日志恢复，因此本地通过日志合并的过程重新生成完整日志并构建自身的 missing 列表。此后通过向状态机投递一个Activate 事件，Peer 可以将自身状态机从 Started/Stray 状态切换为 Started/ReplicaActive 状态，同时调用本地OS 接口开始固化Info和日志信息(也包含自身的missing列表)。
+
+如果 Peer 收到 Info 消息，说明自身数据已经和权威日志同步(实际上，此时 Peer仍然可能包含了比权威日志更新的日志，这可能产生分歧日志，因而需要优先解决分歧日志)，此时直接向状态机投递Activate 事件，同样进入 Started/ReplicaActive 状态并开始固化自身 Info。
+
+本地事务成功之后，Peer需要向 Primary 回应一个Info消息，表明 Peering 成果固化成功。
+
+在进行 Recovery 之前，我们必须首先引人一种同时包含所有 missing 条目和它们(目标版本)所在位置信息的全局数据结构，称为 MissingLoc。
+
+MissingLoc 内部可以细分为两张表，分别称为 `needs_recovery_map` 和 `missing_loc` 顾名思义，它们分别保存当前 OSD的本地PG实例 所有待修复的对象，以及这些对象的目标版本具体存在于哪些 OSD 之上。需要注意的是，某些待修复对象的目标版本可能同时存在于多个OSD实例之上，因此 `missing_loc` 中每个待修复对象的位置信息不是单个OSD而是一些OSD的集合。
+
+因为 Recovery 和 Backfill 必须由 Primary 主导(这和为什么必须由 Primary 来主导客户端发起的读写请求原因一致)所以 MissingLoc 也必须由 Primary 来负责统一生成。
+
+对应生成 `needs_recovery_map` 和 `missing_loc` 的顺序，生成完整的 MissingLoc 也分为两步:首先将所有 Peer missing 列表中的条目依次加 `needs_recovery_map` 之中;其次，以每个 Peer 的 Info 和 missing 列表作为输入，针对 `needs_recovery_map` 中的每个对象逐个进行检查，以进一步确认其目标版本的位置信息并填充 `missing_loc`，具体原则如下:
+* 如果待修复对象的目标版本号(即`need`)比 Peer 的最新日志版本号(即 `last_update`)还大，说明 Peer 不可能存在该目标版本，直接跳过。
+* 待修复对象也位于 Peer 的missing 列表之中，则直接跳过。
+* 否则将对象加 `missing_loc`，同时更新其位置列表(增加当前的 Peer 身份信息)。
+
+成功生成 MissingLoc 之后，如果 `needs_recovery_map` 不为空，即存在任何需要被 Recovery 的对象，则 Primary设置自身状态为 Degraded + Activating(事实上每个PG实例都可以独立设置自身的状态，但是 Monitor 只收集 Primary 当前上报的状态作为 PG 的状态);进一步的，如果 Primary 检测到当前Acting Set 小于存储池副本数，则同时设置 Undersized 状态。之后，Primary 通过本地 OS 开始固化 Peering 结果，并等待其他 Peer 确认 Peering 完成。
+
+当 Primary 检测到自身以及所有 Peer 的 Activate 操作都完成时，通过向状态机投递一个 AllReplicasActivated 事件来清除自身的 Activating 状态和 Creating 状态(如有)，同时检测 PG 此时的 Acting Set 是否小于存储池的最小副本数，如果为是，则将 PG 状态设置为 Peered 并终止后续处理;如果为否，则将 PG 状态设置为 Active，同时将之前堵塞的来自客户端的 op 重新入列。
+
+随着 PG 进入 Active 状态，Peering 流程正式宣告完成，此后 PG 可以正常处理来自客户端的读写请求，Recovery 或者 Backfill 可以切换至后台进行。
