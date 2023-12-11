@@ -621,3 +621,21 @@ PG 日志信息中并未记录任何关于修改的详细描述信息，所以 C
 
 ### Backfill
 
+和 Recovery 类似，如果 Primary 确定 ActingBackfill 集合当中还有副本需要通过 Backfill 才能修复，那么需要通知所有参与 Backfill 的 PG实进行 Backfill 资源预留等待资源预留过程中，PG 进入 Backfill_wait 状态。
+
+如果所有资源预留成功，则可以开始 Backfill，通过向状态机投递一个 AlBackfillsReserved 事件，Primary 将自身内外部状态都切换至 Backfilling；反之，如果检测到任意一个需要 Backfill的 PG实例，其所归属的OSD间不足，则将当前 Backfill 流程挂起释放之前申请成功的全部 Backfill 预留资源，同时进 Backfill_tofull 状态。
+
+后面这种情况，为了防止 Backfill 流程被永久挂起，Primary 同时向定时器注册一个回调函数，每隔一段时间后唤醒一次再次由 Primary 发起资源预留申请，直至重新满足 Backfill 条件为止。
+
+Backfill 强烈依赖于 **“PG 中的所有对象可以基于其全精度哈希值排序”** 这一事实因此理论上 Backfill 的过程就是按照一定的顺序(如按照哈希值从小到大)对 Primary 中当前所有对象进行遍历，并依次将它们通过全对象拷贝的方式写入待 Backfill 的 PG 实例。
+
+*NOTE：所以必须先完成Recovery再Backfill，Primary首先得有正确版本的对象。*
+
+因为 Backfill 需要同步的数据量比较大，所以需要在每次完成一个对象同步之后，通过同步更新 Info 中一个名叫 `last_backfill` 的属性来追踪 Backfill 当前的进度，方便在掉电恢复后继续(如果可能)。
+
+Backfill完成之后，Primary 将向状态机投递一个Backfilled 事件，将状态机切换至Started/Primary/Active/Recovered 状态，此时将完成如下处理：
+* 清除 Backfilling 状态。
+* 向 Monitor 发送一个空的 PG Temp 消息，用于将 Acting Set 调整回 Up Set。
+* 向状态机发送一个GoClean事件，用于将状态机切换至 Started/Primary/Active/Clean 状态。
+
+当(空)PG Temp 在新的 OSDMap 生效之后，PG关联的 Acting Set 和 Up Set 重新变得一致，再次经过 Peering 后 PG 将最终进 Active + Clean 状态，此时 PG 切恢复正常，可以删除不必要的副本(Stray)。
