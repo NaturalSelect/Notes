@@ -574,3 +574,50 @@ MissingLoc 内部可以细分为两张表，分别称为 `needs_recovery_map` �
 当 Primary 检测到自身以及所有 Peer 的 Activate 操作都完成时，通过向状态机投递一个 AllReplicasActivated 事件来清除自身的 Activating 状态和 Creating 状态(如有)，同时检测 PG 此时的 Acting Set 是否小于存储池的最小副本数，如果为是，则将 PG 状态设置为 Peered 并终止后续处理;如果为否，则将 PG 状态设置为 Active，同时将之前堵塞的来自客户端的 op 重新入列。
 
 随着 PG 进入 Active 状态，Peering 流程正式宣告完成，此后 PG 可以正常处理来自客户端的读写请求，Recovery 或者 Backfill 可以切换至后台进行。
+
+### Recovery
+
+如果 Primary 检测到自身或者任意一个 Peer 存在待修复的对象，将通过向状态机投递一个 DoRecovery 事件，切换至 Started/Primary/Active/WaitLocalRecoveryReserved 状态，准备开始执行 Recovery，此时 PG进入 Recovery_wait 状态。
+
+为了防止集群中大量 PG 同时执行 Recovery 从而严重拖累客户端响应速度，需要对集群中 Recovery 相关的操作进行限制，这类限制均以 OSD 作为基本实施对象，以配置项形式提供：
+
+|Config|Description|
+|-|-|
+|`osd_max_backfills`|单个OSD允许同时执行 Recovery 或者 Backfill 的PG实例个数包含 Primary和 Replica。
+注意:虽然单个PG的 Recovery 和 Backfill 流程不能并发，但是不同PG的Recovery 和 Backfill 流程可以并发。|
+|`osd_max_push_cost/osd_max_push_objects`|指示通过 Push 操作执行 Recovery 时，以OSD为单位，单个请求所能够携带的字节数/对象数。|
+|`osd_recovery_max_active`|单个OSD允许同时执行 Recovery 的对象数。|
+|`osd_recovery_op_priority`|指示 Recovery op 默认携带的优先级，这类 op 默认进 `op_shardedwq` 处理，即需要和来自客户端的op进行竞争。因此，设置更低的`osd_recovery_op_priority`将使得 Recovery op 在和客户端 op 竞争中处于劣势，从而起到抑制 Recovery，降低其对客户端业务所产生的影响。|
+|`osd_recovery_sleep`|Recovery op 每次在 `op_shardedwq` 中被处理前，设置此参数将导致对应的服务线程先休眠对应的时间。容易理解这种方式可以显著拉长 Recovery op 执行的间隔，从而有效抑制由Recovery 产生的流量。|
+
+`osd_max_backfills` 用于显式控制每个OSD上能够同时执行 Recovery 的 PG 实例个数，为此我们需要首先向 Primary 所在的OSD申请 Recovery 资源预留，这通过将对应的 PG 加入 OSD 的全局异步资源预留队列来实现。
+
+该队列对 OSD 现有资源(例如此处的 Recovery 资源)进行统筹，按 PG 入队顺序进行分配。如果已经达到资源上限限制(例如可用资源数为 0)，则后续入队的资源预留请求需要排队，等待已占有资源的 PG 释放资源之后重新申请；反之，则将资源直接分配给当前位于队列头部的 PG (同时减少可用资源数)同时执行该 PG 入队时指定的回调函数，以唤醒 PG 继续执行后续操作。
+
+如果 Primary 本地 Recovery 资源预留成功 Primary 通过向状态机投递一个 LocalRecoveryReserved 事件，切换至Started/Primary/Active/WaitRemoteRecoveryReserved 状态，同时通知所有参与 Recovery 的 Peer(为 ActingBackfill 集合当中除 Primary 之外的所有副本)进行资源预留。每个 Peer 执行本地 Recovery 资源预留的过程和 Primary 类似。当 Primary 检测到所有 Peer 资源预留成功后，通过向状态机投递一个 AllRemotesReserved 事件，进入 Started/Primary/Active/Recovering 状态，正式开始执行Recovery，相应的，PG状态也随之由 Recovery_wait 切换至 Recovering。
+
+在实现上让所有需要执行 Recovery 的 PG 也进入 OSD全局的 `op_shardedwq` 工作队列，和来自客户端的 op 一同参与竞争。这样，或通过降低 Recovery op 的权重，或者通过 QoS 对 Recovery 总的 IOPS 和带宽施加限制，我们可以有效控制集群中 Recovery 行为的资源消耗，避免对正常业务造成显著冲击。
+
+当前 Recovery 一共有两种方式：
+* Pull -  Primary 自身存在待修复对象，由 Primary 按照 `missing_loc` 选择合适的副本去拉取待修复对象目标版本至本地，然后完成修复。
+* Push - Primary 感知到一个或者多个 Replica 当前存在待修复对象，主动推送每个待修复对象目标版本至相应 Replica，然后由其本地完成修复。
+
+两者同时进行，Primary既“推”又“拉”。
+
+Primary本地对象的修复是基于日志进行的，具体如下：
+* 日志中 `last_requested` (注意其类型是 Version，而不是 Eversion)用于指示本次 Recovery 的起始版本号，在 Activate 过程中生成。因此，我们首先将所有待修复对象按照日志版本号进行顺序排列，找到版本号不小于 `last_requested` 的第一个对象，记录其真实日志版本号——v(满足`v >= last_requested`)，同时记录其待修复的目标版本号。
+* 如果不为 `head` 对象，那么检查是否需要优先修复 `head` 对象或者 `snapdir` 对象。
+* 根据具体PGBackend生成一个Pull类型的op。
+* 更新 `last_requested`，使其指向 v。
+* 如果尚未达到单次最大修复对象数目限制，则顺序处理队列中下一个待修复对象：否则开始批量发送 Pull 消息，并返回。
+
+需要注意的是，Primary 自我修复过程中，可能会存在多个副本都拥有待修复对象目标版本(典型如多副本)，出于负载均衡的目的此时可以随机选择副本。Primary 在自我修复的同时着手修复各个 Replica 中的损坏对象。因为此前 Primary 已经为每个Replica生成了完整的 missing 列表，可以据此通过Push 的方式逐个完成 Replica 的修复（未完成自我修复的对象会被delay）。
+
+需要注意的是，不同的数据修复策略对于整个 Recovery 的效率存在巨大影响。仍以多副本为例，因为 PG 日志信息中并未记录任何关于修改的详细描述信息，所以 Ceph 目前都是简单的通过全对象拷贝进行修复。容易想见，这在绝大多数情况下都远不是一种最优的数据修复策略，这也是 Ceph 的 Recovery 性能一直为人所诟病的地方。
+
+PG 日志信息中并未记录任何关于修改的详细描述信息，所以 Ceph 目前都是简单的通过全对象拷贝进行修复。
+
+当所有对象修复完成后，Primary 首先通知所有 Replica 释放占用的 Recovery 资源(避免堵塞同一个 OSD 上其他需要执行 Recovery 的 PG 实例)，如果后续需要继续执行 Backfill，那么 Primary 无需释放自身占用的 Recovery 资源，直接向状态机投递一个RequestBackfill事件，清除自身的 Recovering 状态，同时将状态机切换至 Started/Primary/Active/WaitRemoteBackfillReserved 状态，准备开始执行 Backfill。
+
+### Backfill
+
