@@ -291,7 +291,7 @@ Ceph提供以下参数对存储空间进行控制：
 
 ![F31](./F31.png)
 
-每个OSD 通过心跳机制周期性的检测自身空间使用率，并上报至 Monitor。Monitor 检测到任一OSD的空间使用率突破预先设置的安全屏障时，或者产生告警(超过`mon_osd_nearfull_ratio`)，或者将集群设置为 Full (超过 `mon_osd_full ratio`)并阻止所有客户端继续写入。
+每个OSD 通过心跳机制周期性的检测自身空间使用率，并上报至 Monitor。Monitor 检测到任一OSD的空间使用率突破预先设置的安全屏障时，或者产生告警(超过`mon_osd_nearfull_ratio`)，或者将集群设置为 Full (超过 `mon_osd_full_ratio`)并阻止所有客户端继续写入。
 
 `osd_backfill_full_ratio`配置项存在的意义在于有些数据迁移是集群内部自动触发的，例如数据恢复或者自动平衡过程中以 Backfill 方式进行的PG实整体迁。
 
@@ -481,7 +481,7 @@ Primary 共计会向 Stray 发送三种类型的消息，分别为 Query、Info�
 
 一个变通的办法是尽可能选择一些还保留有相对完整内容的 PG 副本进行过渡，对应的OSD 称为 PG Temp(即这些 OSD 是PG的“临时”载体)。
 
-通过在OSDMap 中设置 PG Temp，并显式替换 CRUSH 的计算结果。为此我们需要对基于CRUSH“计算”得到的 PG 映射结果进行区分：一种对应原始计算结果，称为 Up Set;另一种称为Acting Set，其结果依赖于 PG Temp 一如果 PG Tep 有效，则使用PGTemp 填充，否则使用 Up Set 填充。
+通过在OSDMap 中设置 PG Temp，并显式替换 CRUSH 的计算结果。为此我们需要对基于CRUSH“计算”得到的 PG 映射结果进行区分：一种对应原始计算结果，称为 Up Set;另一种称为Acting Set，其结果依赖于 PG Temp 一如果 PG Temp 有效，则使用PGTemp 填充，否则使用 Up Set 填充。
 
 当客户端需要向集群发送读写请求时，总是选择当前Acting Set 中的第一个OSD(亦即Acting Primary)进行发送。当Up Set 中的副本在后台通过 Recovery 或者 Backfill 完成数据同步时，此时可以通知OSDMonitor 取消 PG Temp，使得 Acting Set和 Up Set 再次达成一致，客户端后续的读写业务也随之切回至老的 Primary(即Up Primary)。
 
