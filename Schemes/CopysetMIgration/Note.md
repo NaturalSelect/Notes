@@ -39,6 +39,8 @@
 
 仅追加系统是强一致的（使用Primary-back Replication），只有Primary提供服务，一旦Primary宕掉，则分区只读（掉任何一个节点都会导致只读）。
 
+同时维护一个总大小，该大小只增加。
+
 ### Recovery
 
 此类型系统的恢复流程，较为简单，因为Extent是仅追加的。
@@ -76,20 +78,21 @@ Copyset的Membership分成三个部分：
 * Stray Set - 当前有完整数据的节点集合。
 * Acting Set - 当前正在提供服务的节点集合。
 * Up Set - Master指定的最新Copyset。
-* Epoch - 记录当前Acting Set的版本。
+* Epoch - 记录当前Copyset的版本。
+* Election Epoch - 临时Primary选举Epoch，更新的时候做判断。
 
 当该Copyset启动时（每次Copyset信息修改都会导致重启），需要进行Peering：
-* Copyset从Acting Set中启动，每个节点计算自己的Extent的大小总和，进行选举（根据Extent总大小和Node id），选举出临时Primary。
+* Copyset从Up Set + Stray Set中启动，每个节点计算自己的Extent的大小总和，进行选举（根据Extent总大小和Node id），选举出临时Primary。
 * 临时Primary收集Stray Set + Up Set的Extent信息，根据Extent总大小和Node id排序选举Acting Set：
   * 将前N个节点加入Acting Set中。
-* 接着如果Acting Set改变，临时Primary更新Master中的Copyset信息（导致Copyset重启，临时Primary退出）。
+* 接着如果Acting Set改变，临时Primary更新（附上选举EPoch）Master中的Copyset信息（导致Copyset重启，临时Primary退出）。
 * 排在Acting Set第一位的节点作为Primary：
   * 将Up Set中但不在Acting Set中的节点加入Backfill Set。
   * 对Acting Set进行前台Backfill。
   * 对Backfill Set进行后台Backfill。
 * Acting Set开始对外提供服务。
 
-Primary定时查询Backfill Set中的节点，当其中有节点的Size Sum大小差距小于阈值时，则添加到Acting Set，同时逐出一个不在Up Set中的节点（导致Copyset重启）。
+Primary定时查询Backfill Set中的节点，当其中有节点与Primary的差距小于Primary与某个Stray节点的差距时，则添加到Acting Set，同时逐出一个不在Up Set中的节点（导致Copyset重启）。
 
 当Acting Set与Up Set一致时（顺序无关），将Stray Set更新为Up Set，迁移完成。
 
