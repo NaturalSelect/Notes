@@ -40,7 +40,9 @@
 
 仅追加系统是强一致的（使用Primary-back Replication），只有Primary提供服务，一旦Primary宕掉，则分区只读（Acting Set里面掉任何一个节点都会导致只读）。
 
-同时维护一个总大小，该大小只增加。
+同时维护一个总大小，该大小只增加，这个值与最后一次写入的Copyset Epoch一起构成了PeerInfo。
+
+PeerInfo是有序的比较方式类似于Raft。
 
 ### Recovery
 
@@ -71,9 +73,9 @@
 
 因此Primary必须得知所有Replicas的所有Extent的大小，在启动时，其会进行一轮Backfill，成功之后将Replicas的所有Extent大小设置为与Primary相同。
 
-### Migration
+### Chosee Acting
 
-以上的情况都针对没迁移的场景，下面把它扩展到有迁移的场景，同时需要引入一个叫Peering的过程。
+下面我们通过一个Peering过程，把他串联起来。
 
 Copyset的Membership分成三个部分：
 * Stray Set - 当前有完整数据的节点集合。
@@ -81,27 +83,26 @@ Copyset的Membership分成三个部分：
 * Up Set - Master指定的最新Copyset。
 * Epoch - 记录当前Copyset的版本。
 
-#### Chosee Acting
-
 当Copyset启动时，要做的第一件事情就是选活（Choose Acting）。
 
 为此，需要一个Peering过程。
 
 在Up Set和当前Acting Set中的节点都要参与选活：
 * 过程类似于Raft选举。
-* 每个节点发送自己的Extent Size Sum到其他节点。
-* 只有候选人节点的Extent Size Sum至少与当前节点一样大，才会提供投票给候选人。
+* 每个节点发送自己的PeerInfo到其他节点。
+* 只有候选人节点的PeerInfo至少与当前节点一样大，才会提供投票给候选人。
 
 *NOTE：仔细回想一下，对于每一个写操作，提交之后一定存在于Acting Set的每一个节点中*
 
 当选举出Primary时，Primary就利用当前的信息构造新的Acting Set：
 * 首先Primary将自己加入到Acting Set。
-* 接着Primary将收到的Extent信息（Extent Size Sum）进行排序：
+* 接着Primary将收到的Extent信息（PeerInfo）进行排序：
   * 将前N个与Primary差距小于恢复阈值的节点加入到Acting Set（优先考虑Up Set）。
   * 如果Acting Set满足Acting Size的条件，则选活完成。
   * 如果不满足，就从Up Set中选择足够数量的节点加入Acting Set。
 * Primary用新的Acting Set更新Master的信息，并更新Epoch（到这里才算是选举完成，其他节点才能接收Primary的写请求）。
 * Up Set中没在Acting Set中的节点加入到Backfill Set（Primary的内存数据）。
+* 如果选举出来的Up Set与Acting Set无序一致，则更新Stray Set为Up Set。
 
 *NOTE：同样如果选举超时，需要递增Epoch重新发起，其他节点遇到Epoch比自己大的需要修改自己的Epoch。*
 
@@ -109,27 +110,60 @@ Copyset的Membership分成三个部分：
 
 *NOTE： 当其他节点遇到新Epoch时（无论是从Peer或Master还是Client），立即停止手头上的工作，拒绝接收当前Epoch的Primary写请求，修改Epoch，等待选举超时。*
 
-#### Recovery
-
 当选活完成之后就需要进行修复：
 * Primary对Acting Set中的节点进行Recovery，在这段时间内Acting Set不会提供服务。
 * 同时将Backfill Set中的节点加入后台进行回填。
 * 当Acting Set中的节点完成Recovery之后，就可以提供服务了。
 
-#### Acting Set Switch
+### Acting Set Switch
 
 当Primary发现Backfill Set中有节点的数据至少与自己当前的Acting Set中的Stray Node一样新时，发送请求让Master递增Epoch重启Peering过程。
 
 *NOTE： 在Stray Set中且不在Up Set中的节点称为Stray Node。*
 
-#### Cancel Migration
+*NOTE：每个节点都会定期轮训Master来获得最新的Copyset配置。*
 
-要取消迁移，Master只需要把Up Set设置为当前的Acting Set并递增Epoch即可。
+### Migration
 
-#### Schedule Migration
-
-要发起一次迁移，首先需要取消上一次的迁移。
-
-然后Master设置新的Up Set，同时递增Epoch引发Peering。
+* 要取消迁移，Master只需要把Up Set设置为当前的Acting Set并递增Epoch即可。
+* 要发起一次迁移，首先需要取消上一次的迁移，然后Master设置新的Up Set，同时递增Epoch引发Peering。
 
 ## Raft Based System
+
+尽管将上文的过程扩展到Raft上也可以使用，但是直接利用Raft的机制会让这件事情简单得多。
+
+同样把Copyset的Membership分成三个部分：
+* Stray Set - 当前有完整数据的节点集合。
+* Acting Set - 当前正在提供服务的节点集合。
+* Up Set - Master指定的最新Copyset。
+* Epoch - 记录当前Copyset的版本。
+
+我们利用单步变更来达成这一切。
+
+在基于Raft的系统中，这些数据都是被动的。
+
+### Chosee Leader
+
+选活过程被选主取代，由于我们使用Raft算法，我们不需要手动去选举可用集。
+
+Raft算法从自身Snapshot中保存的Membership中启动选取Leader节点。
+
+当选举完成之后，修改Master上记录的Epoch（如果Acting Set改变了需要递增）和Acting Set（当前Raft FSM的Membership）。
+
+*NOTE： 只有Membership的数量与Acting Size一致时需要这么做。*
+
+同时如果Up Set与Acting Set完全一致，需要将Stray Set设置为Acting Set。
+
+### Migration
+
+迁移过程则较为复杂。
+
+要开始一次变更，首先需要将Up Set设置为新的Membership，然后启动Raft的成员变更。
+
+Raft将一步步地将Acting Set从Stray Set变更到Up Set，每次都变更一个节点采取先增加后减少的方法。
+
+每完成一次先增后减，就更新一次Acting Set和Epoch。
+
+*NOTE：这表明了Acting Set可能会短暂地与Raft Membership不一致，但是这不会发生问题，因为此时Raft处于多一个节点的状态。*
+
+同样的，要取消变更需要把Up Set重新设置为Acting Set。
