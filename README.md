@@ -16,3 +16,4 @@
 * [SSD Hardware](./SSD/README.md)
 * [Linux Storage](./Linux%20Storage/README.md)
 * [Parallel Programming](./ParallelProgramming/README.md)
+* [Schemes](./Schemes/README.md)
