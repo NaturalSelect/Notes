@@ -10,6 +10,7 @@
 * Append Only System - 仅追加系统。
 * Raft Based System - 基于Raft的系统。
 * Backfill - 回填，见下文。
+* Acting Size - Acting Set的大小。
 
 本文的很多想法受到RADOS的启发，因此设计与RADOS类似。
 
@@ -37,7 +38,7 @@
 * DeleteExtent（`0`） - 负责记录被删除的Extent id，该Extent不能被purge或delete且没有最大大小限制。
 * PurgeExtent（`1`） - 负责记录Purge的Extent id和对应的Range，该Extent不能被purge或delete且没有最大大小限制。
 
-仅追加系统是强一致的（使用Primary-back Replication），只有Primary提供服务，一旦Primary宕掉，则分区只读（掉任何一个节点都会导致只读）。
+仅追加系统是强一致的（使用Primary-back Replication），只有Primary提供服务，一旦Primary宕掉，则分区只读（Acting Set里面掉任何一个节点都会导致只读）。
 
 同时维护一个总大小，该大小只增加。
 
@@ -79,21 +80,56 @@ Copyset的Membership分成三个部分：
 * Acting Set - 当前正在提供服务的节点集合。
 * Up Set - Master指定的最新Copyset。
 * Epoch - 记录当前Copyset的版本。
-* Election Epoch - 临时Primary选举Epoch，更新的时候做判断。
 
-当该Copyset启动时（每次Copyset信息修改都会导致重启），需要进行Peering：
-* Copyset从Up Set + Stray Set中启动，每个节点计算自己的Extent的大小总和，进行选举（根据Extent总大小和Node id），选举出临时Primary。
-* 临时Primary收集Stray Set + Up Set的Extent信息，根据Extent总大小和Node id排序选举Acting Set：
-  * 将前N个节点加入Acting Set中。
-* 接着如果Acting Set改变，临时Primary更新（附上选举EPoch）Master中的Copyset信息（导致Copyset重启，临时Primary退出）。
-* 排在Acting Set第一位的节点作为Primary：
-  * 将Up Set中但不在Acting Set中的节点加入Backfill Set。
-  * 对Acting Set进行前台Backfill。
-  * 对Backfill Set进行后台Backfill。
-* Acting Set开始对外提供服务。
+#### Chosee Acting
 
-Primary定时查询Backfill Set中的节点，当其中有节点与Primary的差距小于Primary与某个Stray节点的差距时，则添加到Acting Set，同时逐出一个不在Up Set中的节点（导致Copyset重启）。
+当Copyset启动时，要做的第一件事情就是选活（Choose Acting）。
 
-当Acting Set与Up Set一致时（顺序无关），将Stray Set更新为Up Set，迁移完成。
+为此，需要一个Peering过程。
+
+在Up Set和当前Acting Set中的节点都要参与选活：
+* 过程类似于Raft选举。
+* 每个节点发送自己的Extent Size Sum到其他节点。
+* 只有候选人节点的Extent Size Sum至少与当前节点一样大，才会提供投票给候选人。
+
+*NOTE：仔细回想一下，对于每一个写操作，提交之后一定存在于Acting Set的每一个节点中*
+
+当选举出Primary时，Primary就利用当前的信息构造新的Acting Set：
+* 首先Primary将自己加入到Acting Set。
+* 接着Primary将收到的Extent信息（Extent Size Sum）进行排序：
+  * 将前N个与Primary差距小于恢复阈值的节点加入到Acting Set（优先考虑Up Set）。
+  * 如果Acting Set满足Acting Size的条件，则选活完成。
+  * 如果不满足，就从Up Set中选择足够数量的节点加入Acting Set。
+* Primary用新的Acting Set更新Master的信息，并更新Epoch（到这里才算是选举完成，其他节点才能接收Primary的写请求）。
+* Up Set中没在Acting Set中的节点加入到Backfill Set（Primary的内存数据）。
+
+*NOTE：同样如果选举超时，需要递增Epoch重新发起，其他节点遇到Epoch比自己大的需要修改自己的Epoch。*
+
+*NOTE：当一个Primary遇到比自己Epoch大的请求也需要Step down。*
+
+*NOTE： 当其他节点遇到新Epoch时（无论是从Peer或Master还是Client），立即停止手头上的工作，拒绝接收当前Epoch的Primary写请求，修改Epoch，等待选举超时。*
+
+#### Recovery
+
+当选活完成之后就需要进行修复：
+* Primary对Acting Set中的节点进行Recovery，在这段时间内Acting Set不会提供服务。
+* 同时将Backfill Set中的节点加入后台进行回填。
+* 当Acting Set中的节点完成Recovery之后，就可以提供服务了。
+
+#### Acting Set Switch
+
+当Primary发现Backfill Set中有节点的数据至少与自己当前的Acting Set中的Stray Node一样新时，发送请求让Master递增Epoch重启Peering过程。
+
+*NOTE： 在Stray Set中且不在Up Set中的节点称为Stray Node。*
+
+#### Cancel Migration
+
+要取消迁移，Master只需要把Up Set设置为当前的Acting Set并递增Epoch即可。
+
+#### Schedule Migration
+
+要发起一次迁移，首先需要取消上一次的迁移。
+
+然后Master设置新的Up Set，同时递增Epoch引发Peering。
 
 ## Raft Based System
