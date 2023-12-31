@@ -52,8 +52,10 @@
 * CRUSH: Controlled, Scalable, Decentralized Placement of Replicated Data
 * MAPX: Controlled Data Migration in the Expansion of Decentralized Object-Based Storage Systems
 * Proportional-Share Scheduling for Distributed Storage Systems
+* DistCache: Provable Load Balancing for Large-Scale Storage Systems with Distributed Caching
 
 ## Hardware
 
 * Zone Append: A New Way of Writing to Zoned Storage
 * File Systems Unfit as Distributed Storage Backends: Lessons from 10 Years of Ceph Evolution
+* ZoneFS: Stripe Remodeling in Cloud Data Centers
