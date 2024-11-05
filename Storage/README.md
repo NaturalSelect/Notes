@@ -4,6 +4,8 @@
 
 ## Index
 
-* [SSD Hardware](./SSD/README.md)
-* [Linux Storage](./Linux%20Storage/README.md)
+* [SSD](./SSD/Note.md)
+* [Linux Storage Stack](./Linux%20Storage%20Stack/Note.md)
 * [FUSE](./FUSE/Note.md)
+
+![io stack](./io%20stack.png)
