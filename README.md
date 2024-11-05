@@ -13,7 +13,6 @@
 * [MIT 6.042J Mathematics For Computer Science](./MIT%206.042J/README.md)
 * [CubeFs](./CubeFs/README.md)
 * [Ceph](./Ceph/README.md)
-* [SSD Hardware](./SSD/README.md)
-* [Linux Storage](./Linux%20Storage/README.md)
+* [Storage](./Storage/README.md)
 * [Parallel Programming](./ParallelProgramming/README.md)
 * [Schemes](./Schemes/README.md)
