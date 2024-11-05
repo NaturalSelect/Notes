@@ -36,7 +36,7 @@ FUSE 由内核部分和用户级守护进程两部分组成:
 
 每个请求也包含一个节点 ID - 一个无符号的 64 位整数,用于标识内核和用户空间中的 inode。
 
-**LOOKUP 请求** 执行路径到 inode 的转换，每次查找现有的 inode(或创建新的 inode)时,内核都会将 inode 保存在 inode 缓存中。当从 dcache 中删除 inode 时,内核会向用户空间守护进程发送 **FORGET 请求**。此时,守护进程可能决定释放任何相关的数据结构。**BATCH FORGET 请求** 允许内核通过单个请求 FORGET 多个 inode。
+**LOOKUP 请求** 执行路径到 inode 的转换，每次查找现有的 inode(或创建新的 inode)时,内核都会将 inode 保存在 inode 缓存中。当从 dcache 中删除 inode 时,内核会向用户空间守护进程发送 **FORGET 请求** 。此时,守护进程可能决定释放任何相关的数据结构。 **BATCH FORGET 请求** 允许内核通过单个请求 FORGET 多个 inode。
 
 当用户应用程序打开一个文件时,会生成一个 **OPEN 请求**。在回复这个请求时,FUSE守护进程有机会选择性地分配一个64位的文件句柄给打开的文件。这个文件句柄随后会与与打开的文件相关的每个请求一起由内核返回。用户空间的守护进程可以使用这个句柄来存储与特定打开文件相关的信息。
 
@@ -75,7 +75,7 @@ FUSE将 INTERRUPT 请求放入 Interrupts 队列, FORGET 请求放入 Forgets �
 3. Pending 队列中最早的请求会被转移到用户空间,同时移动到 Processing 队列。因此,Processing 队列中的请求正在被守护进程处理。当守护进程回复一个请求(通过写入`/dev/fuse`),相应的请求就会从 Processing 队列中删除。
 4. 如果 Pending 队列为空,FUSE守护进程就会阻塞在对`/dev/fuse`的`read`调用上。
 
-Background 队列用于暂存异步请求。**在典型的设置中,只有读取请求会进入 Background 队列。**如果写回缓存已启用，那么写请求也会进入 Background 队列，在这种配置下,来自用户进程的写入操作首先会累积到内核页面缓存中,之后 bdflush 线程会唤醒来刷新脏页面。在刷新页面的过程中,FUSE 会形成异步写入请求并将其放入 Background 队列。**来自 Background 队列的请求会逐渐流入 Pending 队列。** FUSE 会限制同时存在于 Pending 队列中的异步请求数量,最多不超过可配置的 `max_background` 参数(默认为12)。**当 Pending 队列中的异步请求少于`max_background`时,来自 Background 队列的请求会被移动到 Pending 队列。**这样做的目的是限制突发的 Background 请求对重要同步请求造成的延迟。
+Background 队列用于暂存异步请求。 **在典型的设置中,只有读取请求会进入 Background 队列。** 如果写回缓存已启用，那么写请求也会进入 Background 队列，在这种配置下,来自用户进程的写入操作首先会累积到内核页面缓存中,之后 bdflush 线程会唤醒来刷新脏页面。在刷新页面的过程中,FUSE 会形成异步写入请求并将其放入 Background 队列。 **来自 Background 队列的请求会逐渐流入 Pending 队列。** FUSE 会限制同时存在于 Pending 队列中的异步请求数量,最多不超过可配置的 `max_background` 参数(默认为12)。 **当 Pending 队列中的异步请求少于`max_background`时,来自 Background 队列的请求会被移动到 Pending 队列。** 这样做的目的是限制突发的 Background 请求对重要同步请求造成的延迟。
 
 队列的长度并未明确限制。然而,当 Pending 和 Processing 的异步请求数量达到可调拥塞阈值参数的值(默认为 `max_background` 的75%,即9个),FUSE会通知Linux VFS系统已拥塞;VFS然后会限制向该文件系统写入的用户进程。
 
